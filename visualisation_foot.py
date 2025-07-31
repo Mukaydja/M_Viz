@@ -10,18 +10,15 @@ from matplotlib.patches import Patch # Pour la légende
 from fpdf import FPDF
 from tempfile import NamedTemporaryFile
 import os
-
 # --- Configuration de la page ---
 st.set_page_config(page_title="Visualisation Foot", layout="wide")
 st.title("Outil de Visualisation de Données Footballistiques")
-
 # --- Upload CSV ---
 st.sidebar.header("📁 Données")
 uploaded_file = st.sidebar.file_uploader("Importer un fichier CSV", type=["csv"])
 if not uploaded_file:
     st.warning("Veuillez importer un fichier CSV.")
     st.stop()
-
 # --- Lecture du CSV avec feedback ---
 with st.spinner("Lecture du fichier CSV..."):
     try:
@@ -32,28 +29,23 @@ with st.spinner("Lecture du fichier CSV..."):
     except Exception as e:
         st.error(f"Erreur lors de la lecture du CSV : {e}")
         st.stop()
-
 # --- Aperçu des données ---
 with st.expander("🔍 Aperçu des données importées"):
     st.write("**Structure du DataFrame :**")
     st.write(df.dtypes)
     st.write("**Premières lignes :**")
     st.dataframe(df.head())
-
 # --- Nettoyage des colonnes nécessaires ---
 required_columns = ['Team', 'Player', 'Event', 'X', 'Y', 'X2', 'Y2']
 missing_columns = [col for col in required_columns if col not in df.columns]
 if missing_columns:
     st.error(f"Colonnes manquantes dans le fichier CSV : {missing_columns}")
     st.stop()
-
 df = df[required_columns]
 df = df.dropna(subset=['Player', 'Event', 'X', 'Y']).reset_index(drop=True)
-
 # --- Conversion des colonnes numériques ---
 for col in ['X', 'Y', 'X2', 'Y2']:
     df[col] = pd.to_numeric(df[col], errors='coerce')
-
 # --- Conversion des coordonnées si en 0–100 ---
 # Ajout d'une vérification plus robuste
 max_coord = df[['X', 'Y', 'X2', 'Y2']].max().max()
@@ -63,7 +55,6 @@ if pd.notna(max_coord) and max_coord <= 105 and max_coord > 50: # Hypothèse rai
     df['X2'] *= 1.2
     df['Y'] *= 0.8
     df['Y2'] *= 0.8
-
 # --- Nettoyage des textes ---
 df['Team'] = df['Team'].fillna('AS Monaco').astype(str).str.strip().str.title()
 df['Player'] = df['Player'].fillna('').astype(str).str.strip().str.title()
@@ -76,7 +67,6 @@ df['Event'] = (
     .str.replace(r'\s+', ' ', regex=True)
     .str.title()
 )
-
 # --- FILTRES ---
 st.sidebar.header("🔍 Filtres Principaux")
 event_options = sorted(df['Event'].dropna().unique())
@@ -89,7 +79,6 @@ displayed_events = st.sidebar.multiselect(
     options=event_options,
     default=["Pass"] if "Pass" in event_options else event_options[:1]
 )
-
 # --- Classification par zones de terrain (AVANT les filtres pour avoir les options de filtre) ---
 def classify_zone(x, y):
     """
@@ -115,12 +104,10 @@ def classify_zone(x, y):
     else:
         # Pour les cas limites ou erreurs, on met par défaut dans une zone centrale
         return 'Médiane' # ou 'Inconnue'
-
 # Ajouter temporairement la colonne Zone pour obtenir les options de filtre
 df['Zone_temp'] = df.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1)
 zone_options = sorted(df['Zone_temp'].dropna().unique())
 del df['Zone_temp'] # Supprimer la colonne temporaire
-
 # Filtre par zone dans la sidebar (avant les options de visualisation)
 selected_zones = st.sidebar.multiselect(
     "Zones du Terrain",
@@ -128,11 +115,9 @@ selected_zones = st.sidebar.multiselect(
     default=zone_options,
     help="Filtrer les événements par zone où ils ont eu lieu."
 )
-
 # --- Options de Visualisation ---
 st.sidebar.header("⚙️ Options d'Affichage")
 show_legend = st.sidebar.checkbox("Afficher la légende des événements", value=True)
-
 # Nouvelle option pour la palette de couleurs avec des noms lisibles
 # Dictionnaire de correspondance Nom Affiché -> Nom Matplotlib
 PALETTE_OPTIONS = {
@@ -147,33 +132,21 @@ PALETTE_OPTIONS = {
     'Pastel1 (Couleurs pastel vives)': 'Pastel1',
     'Dark2 (Couleurs sombres)': 'Dark2'
 }
-
 # Récupérer la liste des noms affichés pour le selectbox
 display_names_list = list(PALETTE_OPTIONS.keys())
-
 # Options avancées dans un expander
 with st.sidebar.expander("➕ Options Avancées"):
     st.markdown("**Flèches (Passes, etc.)**")
     arrow_width = st.slider("Épaisseur des flèches", min_value=0.5, max_value=5.0, value=2.0, step=0.5, key="arrow_width")
     arrow_head_scale = st.slider("Taille de la tête des flèches", min_value=1.0, max_value=10.0, value=2.0, step=0.5, key="arrow_head_scale")
     arrow_alpha = st.slider("Opacité des flèches", min_value=0.1, max_value=1.0, value=0.8, step=0.1, key="arrow_alpha")
-    
     st.markdown("**Points (Tirs, Tacles, etc.)**")
     point_size = st.slider("Taille des points", min_value=20, max_value=200, value=80, step=10, key="point_size")
     scatter_alpha = st.slider("Opacité des points", min_value=0.1, max_value=1.0, value=0.8, step=0.1, key="scatter_alpha")
-    
     st.markdown("**Heatmap**")
     heatmap_alpha = st.slider("Opacité de la heatmap", min_value=0.1, max_value=1.0, value=0.85, step=0.05, key="heatmap_alpha")
-    
-    # NOUVEAUTÉS : Options avancées pour la heatmap
+    # NOUVEAUTÉS : Options avancées pour la heatmap (TYPE DE STATISTIQUE SUPPRIMÉ)
     st.markdown("**Options Avancées Heatmap**")
-    # Choix du type de statistique
-    heatmap_statistic = st.selectbox(
-        "Type de statistique",
-        options=['count', 'density'],
-        index=0,
-        help="Choisissez le type de statistique pour la heatmap."
-    )
     # Option pour masquer/afficher les labels
     show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True, key="show_heatmap_labels")
     # NOUVEAUTÉ : Option pour masquer les labels 0%
@@ -182,7 +155,6 @@ with st.sidebar.expander("➕ Options Avancées"):
         value=True, # Activé par défaut
         help="Masquer les pourcentages à 0% sur la heatmap pour une meilleure lisibilité."
     )
-    
     st.markdown("**Palette de Couleurs**")
     selected_palette_display_name = st.selectbox(
         "Palette de couleurs",
@@ -192,51 +164,42 @@ with st.sidebar.expander("➕ Options Avancées"):
     )
     # Obtenir le nom technique de la palette à utiliser
     color_palette_name = PALETTE_OPTIONS[selected_palette_display_name]
-
 # --- Filtres globaux ---
 df_filtered = df[
     df['Team'].isin(selected_teams) &
     df['Player'].isin(selected_players) &
     df['Event'].isin(displayed_events)
 ]
-
 # Appliquer le filtre par zone
 df_filtered = df_filtered[
     df_filtered.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1).isin(selected_zones)
 ]
 df_event = df_filtered
-
 # --- Vérification après filtrage ---
 if df_event.empty:
     st.warning("Aucun événement ne correspond aux filtres sélectionnés.")
     st.stop()
-
 # --- Ajout de la colonne Zone définitive ---
 df_event['Zone'] = df_event.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1)
-
 # --- TABLEAU QUANTITATIF PAR TYPE ET ZONE ---
 st.header("Quantité d'Événements par Type et Zone")
 zone_counts = df_event.groupby(['Event', 'Zone']).size().unstack(fill_value=0)
 zone_counts['Total'] = zone_counts.sum(axis=1)
 zone_counts = zone_counts.sort_values(by='Total', ascending=False)
 st.dataframe(zone_counts)
-
 # --- TABLEAU DES POURCENTAGES PAR ZONE ---
 st.subheader("Pourcentage d'Événements par Zone")
 zone_total = df_event['Zone'].value_counts().reset_index()
 zone_total.columns = ['Zone', 'Total']
 total_events = zone_total['Total'].sum()
 zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
-
 # Affichage du tableau avec mise en couleur
 st.dataframe(
     zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"})
 )
-
 # Visualisation sur terrain avec répartition en zones
 st.markdown("---")
 st.header("Visualisations sur Terrain - Analyse par Zones")
-
 # --- Paramètres communs pour les deux terrains ---
 common_pitch_params = {
     'pitch_color': 'white',
@@ -245,7 +208,6 @@ common_pitch_params = {
     'line_zorder': 2
 }
 fig_size = (8, 5.5) # Taille uniforme et légèrement ajustée
-
 # Définition des zones pour la visualisation
 # INVERSÉ : Les rectangles correspondent à la logique de classification interchangée
 zones_rects = {
@@ -260,9 +222,7 @@ zone_colors = {
     'Basse': '#FFD700',          # Or
     'Surface Rép.': '#FF6347'     # Rouge tomate
 }
-
 col_a, col_b = st.columns(2)
-
 # --- Terrain avec pourcentages ---
 with col_a:
     pitch_zone = Pitch(**common_pitch_params)
@@ -278,7 +238,6 @@ with col_a:
         ax_zone.text(x + w/2, y + h/2, f"{zone}\n{percent*100:.1f}%", ha='center', va='center', fontsize=8, weight='bold')
     ax_zone.set_title("Répartition en Pourcentages", fontsize=12, weight='bold', pad=10) # pad pour l'espacement
     st.pyplot(fig_zone)
-
 # --- Terrain avec nombre d'événements ---
 with col_b:
     pitch_count = Pitch(**common_pitch_params) # Utilisation des mêmes paramètres
@@ -294,11 +253,9 @@ with col_b:
         ax_count.text(x + w/2, y + h/2, f"{zone}\n{count} evt", ha='center', va='center', fontsize=8, weight='bold')
     ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10) # pad pour l'espacement
     st.pyplot(fig_count)
-
 # --- VISUALISATION TERRAIN ---
 st.markdown("---")
 st.subheader("Visualisations sur Terrain")
-
 # Générer le dictionnaire de couleurs en fonction du choix de l'utilisateur
 def get_event_colors(event_list, palette_name, base_colors_dict):
     if palette_name == 'Par défaut':
@@ -316,20 +273,16 @@ def get_event_colors(event_list, palette_name, base_colors_dict):
             st.warning(f"Palette '{palette_name}' non trouvée. Utilisation de 'tab20'.")
             cmap_fallback = cm.get_cmap('tab20', max(1, len(event_list)))
             return {event: mcolors.to_hex(cmap_fallback(i)) for i, event in enumerate(event_list)}
-
 # Définir les couleurs de base
 base_colors = {
     'Shot': '#FF4B4B', 'Pass': '#6C9AC3', 'Dribble': '#FFA500',
     'Cross': '#92c952', 'Tackle': '#A52A2A', 'Interception': '#FFD700',
     'Clearance': '#00CED1'
 }
-
 # Générer le dictionnaire final des couleurs
 # Utilise color_palette_name obtenu depuis le selectbox
 event_colors = get_event_colors(event_options, color_palette_name, base_colors)
-
 col1, col2 = st.columns(2)
-
 with col1:
     with st.spinner("Génération de la visualisation des événements..."):
         pitch = Pitch(pitch_color='white', line_color='black', linewidth=1)
@@ -367,7 +320,6 @@ with col1:
         else:
             plt.tight_layout()
         st.pyplot(fig1)
-
 with col2:
     with st.spinner("Génération de la heatmap..."):
         pitch = Pitch(pitch_type='statsbomb', pitch_color='white', line_color='black', line_zorder=2)
@@ -375,8 +327,9 @@ with col2:
         fig2.set_facecolor('white')
         df_filtered_hm = df_event if len(displayed_events) != 1 else df_event[df_event['Event'] == displayed_events[0]]
         if not df_filtered_hm.empty:
+            # Suppression de heatmap_statistic, utilisation directe de 'count'
             bin_statistic = pitch.bin_statistic(
-                df_filtered_hm['X'], df_filtered_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True
+                df_filtered_hm['X'], df_filtered_hm['Y'], statistic='count', bins=(6, 5), normalize=True
             )
             pitch.heatmap(bin_statistic, ax=ax2, cmap='Reds', edgecolor='white', alpha=heatmap_alpha)
             
@@ -408,9 +361,7 @@ with col2:
                 
         ax2.set_title("Heatmap des Événements", fontsize=12, weight='bold')
         st.pyplot(fig2)
-
 st.markdown("---")
-
 # --- CARTES COMBINÉES PAR TYPE D'ÉVÉNEMENT ---
 if not df_event.empty:
     with st.expander("📊 Carte combinée par type d'événement", expanded=True):
@@ -444,6 +395,7 @@ if not df_event.empty:
                         fc=color, marker='o', s=point_size, ec='black', lw=1,
                         alpha=scatter_alpha, zorder=5
                     )
+                # Suppression de heatmap_statistic, utilisation directe de 'count'
                 bin_stat = pitch.bin_statistic(df_type['X'], df_type['Y'], bins=(6, 5), normalize=True)
                 event_cmaps = ['Reds', 'Blues', 'Greens', 'Purples', 'Oranges', 'Greys', 'YlGnBu', 'PuRd']
                 cmap_name = event_cmaps[i % len(event_cmaps)]
@@ -478,7 +430,6 @@ if not df_event.empty:
                     fig.savefig(tmpfile.name, bbox_inches='tight', dpi=150)
                     combined_images.append((event_type, tmpfile.name))
                 plt.close(fig)  # Fermer la figure pour libérer la mémoire
-
 # --- TÉLÉCHARGEMENT DU RAPPORT PDF FINAL ---
 # Placer le bouton dans la sidebar, en bas
 st.sidebar.markdown("---")
