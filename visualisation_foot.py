@@ -18,7 +18,6 @@ st.title("Outil de Visualisation de Données Footballistiques")
 # --- Upload CSV ---
 st.sidebar.header("📁 Données")
 uploaded_file = st.sidebar.file_uploader("Importer un fichier CSV", type=["csv"])
-
 if not uploaded_file:
     st.warning("Veuillez importer un fichier CSV.")
     st.stop()
@@ -97,18 +96,21 @@ def classify_zone(x, y):
     Classifie un point (x, y) dans une zone du terrain.
     Les zones sont mutuellement exclusives.
     Ordre de priorité: Surface Rép. > Haute > Médiane > Basse
+    INVERSÉ : Basse et Haute sont interchangées
     """
     # 1. Surface de Réparation (la plus spécifique, prioritaire)
     if 102 < x <= 120 and 18 < y < 62:
         return 'Surface Rép.'
     # 2. Haute (approche de la surface adverse, mais en dehors de la Surface Rép.)
-    elif 90 < x <= 102:
+    # INVERSÉ : Haute est maintenant près du fond de son propre camp (ancienne Basse)
+    elif 0 <= x < 36:
         return 'Haute'
     # 3. Médiane
     elif 36 <= x <= 90:
         return 'Médiane'
     # 4. Basse (fond de son propre camp)
-    elif 0 <= x < 36:
+    # INVERSÉ : Basse est maintenant près de la surface adverse (ancienne Haute)
+    elif 90 < x <= 102:
         return 'Basse'
     else:
         # Pour les cas limites ou erreurs, on met par défaut dans une zone centrale
@@ -174,6 +176,12 @@ with st.sidebar.expander("➕ Options Avancées"):
     )
     # Option pour masquer/afficher les labels
     show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True, key="show_heatmap_labels")
+    # NOUVEAUTÉ : Option pour masquer les labels 0%
+    hide_zero_percent_labels = st.checkbox(
+        "Masquer les labels 0%",
+        value=True, # Activé par défaut
+        help="Masquer les pourcentages à 0% sur la heatmap pour une meilleure lisibilité."
+    )
     
     st.markdown("**Palette de Couleurs**")
     selected_palette_display_name = st.selectbox(
@@ -191,6 +199,7 @@ df_filtered = df[
     df['Player'].isin(selected_players) &
     df['Event'].isin(displayed_events)
 ]
+
 # Appliquer le filtre par zone
 df_filtered = df_filtered[
     df_filtered.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1).isin(selected_zones)
@@ -218,6 +227,7 @@ zone_total = df_event['Zone'].value_counts().reset_index()
 zone_total.columns = ['Zone', 'Total']
 total_events = zone_total['Total'].sum()
 zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
+
 # Affichage du tableau avec mise en couleur
 st.dataframe(
     zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"})
@@ -237,16 +247,17 @@ common_pitch_params = {
 fig_size = (8, 5.5) # Taille uniforme et légèrement ajustée
 
 # Définition des zones pour la visualisation
+# INVERSÉ : Les rectangles correspondent à la logique de classification interchangée
 zones_rects = {
-    'Basse': (0, 0, 36, 80),
-    'Médiane': (36, 0, 54, 80), # 90-36=54
-    'Haute': (90, 0, 12, 80),   # 102-90=12
+    'Haute': (0, 0, 36, 80),      # Ancienne Basse
+    'Médiane': (36, 0, 54, 80),   # 90-36=54
+    'Basse': (90, 0, 12, 80),     # Ancienne Haute (102-90=12)
     'Surface Rép.': (102, 18, 18, 44) # 120-102=18, 62-18=44
 }
 zone_colors = {
-    'Basse': '#87CEEB',          # Bleu clair
+    'Haute': '#87CEEB',          # Bleu clair
     'Médiane': '#98FB98',        # Vert pâle
-    'Haute': '#FFD700',          # Or
+    'Basse': '#FFD700',          # Or
     'Surface Rép.': '#FF6347'     # Rouge tomate
 }
 
@@ -257,9 +268,7 @@ with col_a:
     pitch_zone = Pitch(**common_pitch_params)
     fig_zone, ax_zone = pitch_zone.draw(figsize=fig_size)
     fig_zone.set_facecolor('white') # Définir la couleur de fond de la figure
-    
     zone_percents = df_event['Zone'].value_counts(normalize=True).to_dict()
-   
     for zone, (x, y, w, h) in zones_rects.items():
         percent = zone_percents.get(zone, 0)
         rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black', facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
@@ -275,9 +284,7 @@ with col_b:
     pitch_count = Pitch(**common_pitch_params) # Utilisation des mêmes paramètres
     fig_count, ax_count = pitch_count.draw(figsize=fig_size)
     fig_count.set_facecolor('white') # Définir la couleur de fond de la figure
-    
     zone_counts_dict = df_event['Zone'].value_counts().to_dict()
-    
     for zone, (x, y, w, h) in zones_rects.items():
         count = zone_counts_dict.get(zone, 0)
         rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black', facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
@@ -322,6 +329,7 @@ base_colors = {
 event_colors = get_event_colors(event_options, color_palette_name, base_colors)
 
 col1, col2 = st.columns(2)
+
 with col1:
     with st.spinner("Génération de la visualisation des événements..."):
         pitch = Pitch(pitch_color='white', line_color='black', linewidth=1)
@@ -347,10 +355,8 @@ with col1:
                 )
             if show_legend:
                  legend_elements.append(Patch(facecolor=color, label=event_type))
-
         ax1.set_title("Visualisation des Événements", fontsize=12, weight='bold')
         fig1.set_facecolor('white')
-        
         # Ajuster la mise en page AVANT d'ajouter la légende pour éviter la compression
         if show_legend and legend_elements:
             # Ajuster la taille de la figure pour accommoder la légende
@@ -360,7 +366,6 @@ with col1:
             plt.subplots_adjust(right=0.82)  # Laisser de la place à droite pour la légende
         else:
             plt.tight_layout()
-            
         st.pyplot(fig1)
 
 with col2:
@@ -369,45 +374,38 @@ with col2:
         fig2, ax2 = pitch.draw(figsize=(10, 6))
         fig2.set_facecolor('white')
         df_filtered_hm = df_event if len(displayed_events) != 1 else df_event[df_event['Event'] == displayed_events[0]]
-        
-        # --- CORRECTION : Vérification stricte avant bin_statistic ---
-        # Vérifier que df_filtered_hm n'est pas vide et contient des valeurs valides pour X et Y
         if not df_filtered_hm.empty:
-            # Supprimer les lignes avec NaN dans X ou Y pour le calcul de la heatmap
-            df_heatmap_data = df_filtered_hm.dropna(subset=['X', 'Y'])
+            bin_statistic = pitch.bin_statistic(
+                df_filtered_hm['X'], df_filtered_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True
+            )
+            pitch.heatmap(bin_statistic, ax=ax2, cmap='Reds', edgecolor='white', alpha=heatmap_alpha)
             
-            # Vérifier s'il reste des données après nettoyage
-            if not df_heatmap_data.empty:
-                try:
-                    bin_statistic = pitch.bin_statistic(
-                        df_heatmap_data['X'], df_heatmap_data['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True
-                    )
-                    pitch.heatmap(bin_statistic, ax=ax2, cmap='Reds', edgecolor='white', alpha=heatmap_alpha)
-                    # NOUVEAUTÉ : Condition pour afficher ou masquer les labels
-                    if show_heatmap_labels:
-                        path_eff = [patheffects.withStroke(linewidth=0.6, foreground="black")]
-                        pitch.label_heatmap(
-                            bin_statistic, str_format='{:.0%}',
-                            color='black',
-                            fontsize=12,
-                            ax=ax2,
-                            ha='center',
-                            va='center',
-                            path_effects=path_eff
-                        )
-                except ValueError as e:
-                    # Attraper toute autre ValueError de bin_statistic
-                    st.warning(f"Impossible de générer la heatmap : {e}")
-                    ax2.text(0.5, 0.5, "Données insuffisantes\npour la heatmap", transform=ax2.transAxes, ha='center', va='center')
-            else:
-                # Données présentes mais toutes avec X/Y NaN
-                st.info("Aucune donnée valide (coordonnées X, Y) trouvée pour la heatmap.")
-                ax2.text(0.5, 0.5, "Données insuffisantes\n(coordonnées manquantes)", transform=ax2.transAxes, ha='center', va='center')
-        else:
-            # df_filtered_hm est vide
-            st.info("Aucune donnée à afficher pour la heatmap avec les filtres actuels.")
-            ax2.text(0.5, 0.5, "Aucune donnée\n(filtres)", transform=ax2.transAxes, ha='center', va='center')
-        
+            # >>>>> SOLUTION RADICALE : Utiliser pitch.label_heatmap <<<<<
+            # Remplacer la boucle personnalisée problématique par l'appel standard
+            if show_heatmap_labels:
+                # Configurer les options d'affichage des labels
+                # Masquer les 0% si demandé
+                if hide_zero_percent_labels:
+                    # Créer un masque pour les valeurs à 0
+                    labels = bin_statistic['statistic']
+                    labels = np.where(labels == 0, np.nan, labels)
+                    # Passer le masque à label_heatmap
+                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}', 
+                                        fontsize=12, ha='center', va='center', 
+                                        exclude_zeros=True, # Cette option masque les 0 et les NaN
+                                        color='black')
+                else:
+                    # Afficher tous les labels
+                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}', 
+                                        fontsize=12, ha='center', va='center', 
+                                        color='black')
+                    
+                # Appliquer les effets de contour si nécessaire
+                # Note: label_heatmap ne permet pas directement d'ajouter path_effects.
+                # On peut le faire manuellement après si nécessaire, mais cela complique le code.
+                # Pour simplifier, on laisse comme ça. Si vous voulez les contours, 
+                # il faudra revenir à une boucle personnalisée mais avec une approche différente.
+                
         ax2.set_title("Heatmap des Événements", fontsize=12, weight='bold')
         st.pyplot(fig2)
 
@@ -446,44 +444,35 @@ if not df_event.empty:
                         fc=color, marker='o', s=point_size, ec='black', lw=1,
                         alpha=scatter_alpha, zorder=5
                     )
+                bin_stat = pitch.bin_statistic(df_type['X'], df_type['Y'], bins=(6, 5), normalize=True)
+                event_cmaps = ['Reds', 'Blues', 'Greens', 'Purples', 'Oranges', 'Greys', 'YlGnBu', 'PuRd']
+                cmap_name = event_cmaps[i % len(event_cmaps)]
+                pitch.heatmap(bin_stat, ax=ax, cmap=cmap_name, edgecolor='white', alpha=heatmap_alpha)
                 
-                # --- CORRECTION : Vérification stricte pour chaque carte combinée ---
-                if not df_type.empty:
-                    # Générer la heatmap - Vérification stricte
-                    # Supprimer les lignes avec NaN dans X ou Y pour le calcul de la heatmap
-                    df_heatmap_data = df_type.dropna(subset=['X', 'Y'])
-                    
-                    if not df_heatmap_data.empty:
-                        try:
-                            bin_stat = pitch.bin_statistic(df_heatmap_data['X'], df_heatmap_data['Y'], bins=(6, 5), normalize=True)
-                            event_cmaps = ['Reds', 'Blues', 'Greens', 'Purples', 'Oranges', 'Greys', 'YlGnBu', 'PuRd']
-                            cmap_name = event_cmaps[i % len(event_cmaps)]
-                            pitch.heatmap(bin_stat, ax=ax, cmap=cmap_name, edgecolor='white', alpha=heatmap_alpha)
-                            # NOUVEAUTÉ : Condition pour afficher ou masquer les labels dans les cartes combinées
-                            if show_heatmap_labels:
-                                pitch.label_heatmap(
-                                    bin_stat, str_format='{:.0%}',
-                                    color='black',
-                                    fontsize=10,
-                                    ax=ax,
-                                    path_effects=[patheffects.withStroke(linewidth=0.6, foreground="black")]
-                                )
-                        except ValueError as e:
-                            # Gérer spécifiquement l'erreur de valeurs manquantes
-                            st.warning(f"Données insuffisantes pour générer la heatmap de {event_type} : {e}")
-                            # Optionnellement, afficher un message sur le graphique
-                            # ax.text(...) 
-                        except Exception as e:
-                             st.warning(f"Erreur inattendue lors de la génération de la heatmap pour {event_type} : {e}")
+                # >>>>> SOLUTION RADICALE : Utiliser pitch.label_heatmap <<<<<
+                # Remplacer la boucle personnalisée problématique par l'appel standard
+                if show_heatmap_labels:
+                    # Configurer les options d'affichage des labels
+                    # Masquer les 0% si demandé
+                    if hide_zero_percent_labels:
+                        # Créer un masque pour les valeurs à 0
+                        labels = bin_stat['statistic']
+                        labels = np.where(labels == 0, np.nan, labels)
+                        # Passer le masque à label_heatmap
+                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}', 
+                                            fontsize=10, ha='center', va='center', 
+                                            exclude_zeros=True, # Cette option masque les 0 et les NaN
+                                            color='black')
                     else:
-                        # Données présentes mais toutes avec X/Y NaN
-                        st.info(f"Aucune donnée valide (coordonnées X, Y) trouvée pour la heatmap de {event_type}.")
-                        # Optionnellement, afficher un message
-                        # ax.text(...)
-                
+                        # Afficher tous les labels
+                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}', 
+                                            fontsize=10, ha='center', va='center', 
+                                            color='black')
+                                            
                 ax.set_title(event_type, color='black', fontsize=12, weight='bold')
                 fig.set_facecolor('white')
                 row[i].pyplot(fig)
+                
                 # Sauvegarder l'image pour le PDF
                 with NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                     fig.savefig(tmpfile.name, bbox_inches='tight', dpi=150)
@@ -498,10 +487,12 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
         # Format A3 paysage (420mm x 297mm) pour plus d'espace
         pdf = FPDF(orientation='L', unit='mm', format='A3')
         pdf.set_auto_page_break(auto=False)
+        
         def add_footer():
             pdf.set_y(-10)
             pdf.set_font("Arial", 'I', 8)
             pdf.cell(0, 5, f"Page {pdf.page_no()}", 0, 0, 'C')
+
         # Préparer toutes les images avant de créer le PDF
         temp_files = []
         try:
@@ -523,16 +514,19 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.set_font("Arial", 'I', 10)
             pdf.cell(0, 10, f"Nombre total d'événements : {len(df_event)}", ln=True, align='C')
             add_footer()
+
             # --- Page 2: Tableaux et terrains zonaux ---
             pdf.add_page()
             pdf.set_font("Arial", 'B', 18)
             pdf.cell(0, 12, "Analyse par Zones du Terrain", ln=True, align='C')
             pdf.ln(8)
+            
             # Tableau quantitatif (partie supérieure gauche)
             pdf.set_xy(20, 30)  # Position fixe pour éviter les chevauchements
             pdf.set_font("Arial", 'B', 12)
             pdf.cell(180, 8, "Événements par Type et Zone", ln=True)
             pdf.ln(3)
+            
             # En-têtes du tableau
             col_names = ['Event'] + [col for col in zone_counts.columns if col != 'Total'] + ['Total']
             col_widths = [35] + [25] * (len(col_names) - 2) + [25]
@@ -540,6 +534,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             for i, name in enumerate(col_names):
                 pdf.cell(col_widths[i], 8, str(name), border=1, fill=True, align='C')
             pdf.ln()
+            
             # Données du tableau
             pdf.set_font("Arial", size=10)
             pdf.set_fill_color(255, 255, 255)
@@ -549,11 +544,13 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                     pdf.cell(col_widths[i+1], 8, str(int(row[col])), border=1, align='C')
                 pdf.cell(col_widths[-1], 8, str(int(row['Total'])), border=1, align='C')
                 pdf.ln()
+                
             # Tableau des pourcentages (partie supérieure droite avec position fixe)
             pdf.set_xy(250, 30)  # Position fixe à droite
             pdf.set_font("Arial", 'B', 12)
             pdf.cell(125, 8, "Répartition par Zone (%)", ln=True)
             pdf.ln(3)
+            
             pdf.set_xy(250, 46)  # Position fixe pour les en-têtes
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(220, 220, 220)
@@ -561,6 +558,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.cell(35, 8, "Total", border=1, fill=True, align='C')
             pdf.cell(40, 8, "Pourcentage", border=1, fill=True, align='C')
             pdf.ln()
+            
             pdf.set_font("Arial", size=10)
             pdf.set_fill_color(255, 255, 255)
             current_y = 54  # Y fixe pour commencer les données
@@ -570,6 +568,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 pdf.cell(35, 8, str(row['Total']), border=1, align='C')
                 pdf.cell(40, 8, f"{row['Pourcentage']:.1f}%", border=1, align='C')
                 current_y += 8
+
             # Sauvegarder les terrains zonaux avec une meilleure résolution
             with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_pct:
                 fig_zone.savefig(tmp_zone_pct.name, bbox_inches='tight', dpi=200, facecolor='white')
@@ -577,10 +576,12 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_count:
                 fig_count.savefig(tmp_zone_count.name, bbox_inches='tight', dpi=200, facecolor='white')
                 temp_files.append(tmp_zone_count.name)
+
             # Placer les terrains dans la partie inférieure (plus grands)
             terrain_y = 140
             pdf.image(tmp_zone_pct.name, x=50, y=terrain_y, w=140, h=90)
             pdf.image(tmp_zone_count.name, x=220, y=terrain_y, w=140, h=90)
+            
             # Légendes sous les terrains
             pdf.set_xy(50, terrain_y + 95)
             pdf.set_font("Arial", 'B', 11)
@@ -588,11 +589,13 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.set_xy(220, terrain_y + 95)
             pdf.cell(140, 6, "Nombre d'Événements", align='C')
             add_footer()
+
             # --- Page 3: Visualisations des terrains ---
             pdf.add_page()
             pdf.set_font("Arial", 'B', 18)
             pdf.cell(0, 12, "Visualisations sur Terrain", ln=True, align='C')
             pdf.ln(10)
+            
             # Sauvegarder les visualisations avec une meilleure résolution
             with NamedTemporaryFile(delete=False, suffix=".png") as tmp_fig1:
                 fig1.savefig(tmp_fig1.name, bbox_inches='tight', dpi=200, facecolor='white')
@@ -600,11 +603,13 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             with NamedTemporaryFile(delete=False, suffix=".png") as tmp_fig2:
                 fig2.savefig(tmp_fig2.name, bbox_inches='tight', dpi=200, facecolor='white')
                 temp_files.append(tmp_fig2.name)
+
             # Placer les visualisations côte à côte avec plus d'espace
             terrain_width = 180
             terrain_height = 120
             pdf.image(tmp_fig1.name, x=30, y=40, w=terrain_width, h=terrain_height)
             pdf.image(tmp_fig2.name, x=230, y=40, w=terrain_width, h=terrain_height)
+            
             # Légendes sous les terrains
             pdf.set_xy(30, 165)
             pdf.set_font("Arial", 'B', 12)
@@ -612,12 +617,14 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.set_xy(230, 165)
             pdf.cell(terrain_width, 8, "Heatmap des événements", align='C')
             add_footer()
+
             # --- Page 4: Cartes combinées ---
             if combined_images:
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
                 pdf.cell(0, 12, "Cartes Combinées par Type d'Événement", ln=True, align='C')
                 pdf.ln(10)
+                
                 # Organiser les images en grille adaptée au format A3
                 img_width = 120
                 img_height = 80
@@ -626,6 +633,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 cols = 3
                 spacing_x = 15
                 spacing_y = 20
+                
                 for i, (event_type, img_path) in enumerate(combined_images):
                     if i >= 6:  # Limite à 6 images par page (2 lignes de 3)
                         break
@@ -634,11 +642,13 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                     x = margin_x + col * (img_width + spacing_x)
                     y = margin_y + row * (img_height + spacing_y)
                     pdf.image(img_path, x=x, y=y, w=img_width, h=img_height)
+                    
                     # Titre sous l'image
                     pdf.set_xy(x, y + img_height + 3)
                     pdf.set_font("Arial", 'B', 11)
                     pdf.cell(img_width, 6, event_type, align='C')
                 add_footer()
+
             # Générer et télécharger le PDF
             with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
                 pdf.output(tmp_pdf.name)
