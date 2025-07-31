@@ -1,3 +1,12 @@
+# am-fcp.py
+
+# --- IMPORTS (ajouts pour l'authentification) ---
+import uuid
+import json
+import time
+import os # Pour les variables d'environnement
+
+# --- IMPORTS EXISTANTS (inchangés, à conserver) ---
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,10 +18,197 @@ from matplotlib import patheffects
 from matplotlib.patches import Patch # Pour la légende
 from fpdf import FPDF
 from tempfile import NamedTemporaryFile
-import os
-# --- Configuration de la page ---
-st.set_page_config(page_title="Visualisation Foot", layout="wide")
-st.title("Outil de Visualisation de Données Footballistiques")
+
+# --- FONCTIONS D'AUTHENTIFICATION (NOUVEAU) ---
+# Chemin vers le fichier "base de données" simulée
+USER_DB_FILE = "authorized_users.json"
+
+def load_authorized_users():
+    """Charge la liste des utilisateurs autorisés depuis un fichier JSON."""
+    try:
+        with open(USER_DB_FILE, "r") as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        # Si le fichier n'existe pas, créer un ensemble vide
+        return set()
+
+def save_authorized_users(users_set):
+    """Sauvegarde la liste des utilisateurs autorisés dans un fichier JSON."""
+    with open(USER_DB_FILE, "w") as f:
+        json.dump(list(users_set), f)
+
+def is_user_authorized():
+    """Vérifie si l'utilisateur actuel est connecté et autorisé."""
+    # Vérifier si l'utilisateur est connecté (session_state)
+    if 'logged_in' not in st.session_state or not st.session_state['logged_in']:
+        return False
+    # Vérifier si l'identifiant de l'utilisateur est dans la liste autorisée
+    if 'user_id' not in st.session_state:
+        return False
+    
+    authorized_users = load_authorized_users()
+    return st.session_state['user_id'] in authorized_users
+
+def login_page():
+    """Affiche la page de connexion/inscription."""
+    st.title("⚽ Accès à l'Outil de Visualisation Footballistique")
+    
+    # --- Section d'explication ---
+    st.markdown("""
+    ### Bienvenue !
+    Cet outil vous permet d'analyser et de visualiser vos données footballistiques.
+    
+    **Fonctionnalités :**
+    - Upload de fichiers CSV
+    - Visualisation des événements sur le terrain
+    - Génération de heatmaps
+    - Création de rapports PDF détaillés
+    
+    **Accès restreint :** Un abonnement mensuel est requis pour utiliser cet outil.
+    """)
+
+    # --- Section de connexion/inscription ---
+    st.markdown("---")
+    st.subheader("🔐 Accès Utilisateur")
+    
+    # Tabs pour Inscription / Connexion
+    tab1, tab2 = st.tabs(["📝 Nouvel Utilisateur", "🔑 Déjà Inscrit"])
+    
+    with tab1:
+        st.markdown("**Créez un compte pour commencer.**")
+        new_user_name = st.text_input("Votre Nom (optionnel)", key="new_name")
+        if st.button("Créer un Compte & Obtenir un Identifiant"):
+            # Générer un identifiant unique
+            user_id = str(uuid.uuid4())
+            # Stocker dans la session
+            st.session_state['logged_in'] = True
+            st.session_state['user_id'] = user_id
+            st.session_state['user_name'] = new_user_name if new_user_name else "Utilisateur"
+            st.success(f"Compte créé avec succès ! Bienvenue, {st.session_state['user_name']} !")
+            st.info(f"Votre **Identifiant Unique** est : `{user_id}`")
+            st.warning("⚠️ **Important :** Conservez cet identifiant. Vous en aurez besoin pour activer votre abonnement.")
+            st.markdown("**Prochaine étape :** Procédez au paiement mensuel.")
+            # Bouton pour aller vers le paiement (à configurer avec votre lien Stripe)
+            st.link_button("💳 Procéder au Paiement Mensuel", "https://buy.stripe.com/test_8x228qfqfbeS5Zed0ldEs00")
+            st.markdown("*(Pour l'instant, le paiement est simulé. Contactez l'administrateur avec votre ID pour activation.)*")
+            time.sleep(2) # Laisser le message s'afficher
+            # On ne recharge pas ici pour montrer le message
+
+    with tab2:
+        st.markdown("**Connectez-vous avec votre identifiant unique.**")
+        user_id_input = st.text_input("Votre Identifiant Unique", key="login_id")
+        user_name_input = st.text_input("Votre Nom (optionnel)", key="login_name")
+        if st.button("Se Connecter"):
+            if user_id_input:
+                # Charger les utilisateurs autorisés
+                authorized_users = load_authorized_users()
+                # Vérifier si l'ID est autorisé
+                if user_id_input in authorized_users:
+                    st.session_state['logged_in'] = True
+                    st.session_state['user_id'] = user_id_input
+                    st.session_state['user_name'] = user_name_input if user_name_input else "Utilisateur"
+                    st.success(f"Connexion réussie ! Bienvenue, {st.session_state['user_name']} !")
+                    time.sleep(1)
+                    st.rerun() # Recharger pour afficher l'application principale
+                else:
+                    # L'utilisateur existe mais n'est pas encore autorisé
+                    st.session_state['logged_in'] = True # On le connecte temporairement
+                    st.session_state['user_id'] = user_id_input
+                    st.session_state['user_name'] = user_name_input if user_name_input else "Utilisateur"
+                    st.info(f"Bonjour, {st.session_state['user_name']} ! Votre identifiant est reconnu.")
+                    st.warning("🔒 Votre compte n'est pas encore activé. Veuillez vérifier que votre abonnement est en cours.")
+                    # Bouton pour aller vers le paiement
+                    st.link_button("💳 Vérifier/Procéder au Paiement", "https://buy.stripe.com/test_8x228qfqfbeS5Zed0ldEs00")
+                    st.markdown("*(Si vous avez déjà payé, contactez l'administrateur avec votre ID.)*")
+                    # On ne recharge pas ici pour montrer le message
+            else:
+                st.error("Veuillez entrer un identifiant.")
+
+    # --- Section Admin (pour vous) ---
+    st.markdown("---")
+    with st.expander("🛠️ Panneau d'Administration (Pour vous)"):
+        admin_password_input = st.text_input("Mot de passe administrateur", type="password")
+        # Utiliser os.getenv pour obtenir le mot de passe depuis l'environnement
+        expected_admin_password = os.getenv("ADMIN_PASSWORD") 
+        
+        # Vérifier si le mot de passe est défini et s'il correspond
+        if expected_admin_password and admin_password_input == expected_admin_password:
+            st.success("✅ Accès administrateur")
+            user_id_to_add = st.text_input("Ajouter un ID utilisateur (après paiement)")
+            if st.button("Autoriser l'Utilisateur"):
+                if user_id_to_add:
+                    authorized_users = load_authorized_users()
+                    authorized_users.add(user_id_to_add)
+                    save_authorized_users(authorized_users)
+                    st.success(f"Utilisateur `{user_id_to_add}` autorisé avec succès !")
+                else:
+                    st.warning("Veuillez entrer un ID utilisateur.")
+            
+            if st.button("Voir la liste des utilisateurs autorisés"):
+                authorized_users = load_authorized_users()
+                if authorized_users:
+                    st.write("Utilisateurs autorisés :")
+                    # Afficher dans un textarea pour faciliter la copie
+                    st.text_area("Liste des ID", value="\n".join(authorized_users), height=150, key="admin_user_list")
+                else:
+                    st.info("Aucun utilisateur autorisé pour le moment.")
+            
+            user_id_to_remove = st.text_input("Retirer un ID utilisateur")
+            if st.button("Retirer l'Utilisateur"):
+                if user_id_to_remove:
+                    authorized_users = load_authorized_users()
+                    if user_id_to_remove in authorized_users:
+                        authorized_users.remove(user_id_to_remove)
+                        save_authorized_users(authorized_users)
+                        st.success(f"Utilisateur `{user_id_to_remove}` retiré avec succès.")
+                        # Si l'utilisateur retiré est l'utilisateur actuel, le déconnecter
+                        if 'user_id' in st.session_state and st.session_state['user_id'] == user_id_to_remove:
+                            st.session_state['logged_in'] = False
+                            if 'user_id' in st.session_state: del st.session_state['user_id']
+                            if 'user_name' in st.session_state: del st.session_state['user_name']
+                            st.info("Votre accès a été révoqué. Vous avez été déconnecté.")
+                    else:
+                        st.warning("ID utilisateur non trouvé.")
+                else:
+                    st.warning("Veuillez entrer un ID utilisateur.")
+        elif admin_password_input:
+            st.error("🔐 Mot de passe administrateur incorrect.")
+        elif expected_admin_password is None:
+            st.warning("⚠️ Mot de passe administrateur non configuré. Veuillez le définir dans les paramètres de déploiement.")
+
+# --- VÉRIFICATION D'ACCÈS AU DÉBUT DU SCRIPT (NOUVEAU) ---
+# Vérifier si l'utilisateur est autorisé au début de l'exécution
+if not is_user_authorized():
+    # Si l'utilisateur n'est pas connecté ou pas autorisé, afficher la page de login
+    login_page()
+    
+    # Permettre la connexion temporaire pour voir le message
+    if 'logged_in' in st.session_state and st.session_state['logged_in']:
+        # Afficher un message personnalisé
+        if 'user_name' in st.session_state:
+            st.markdown(f"Bonjour, **{st.session_state['user_name']}** !")
+        
+        # Afficher le bouton de déconnexion
+        if st.button("Se Déconnecter"):
+            # Nettoyer la session
+            keys_to_delete = [key for key in st.session_state.keys() if key.startswith('logged_in') or key.startswith('user_')]
+            for key in keys_to_delete:
+                del st.session_state[key]
+            st.success("Vous avez été déconnecté.")
+            st.rerun()
+    
+    st.stop() # Arrêter l'exécution du reste du code
+
+# --- CONTENU DE L'APPLICATION PRINCIPALE (votre code existant commence ici) ---
+
+# Afficher un message de bienvenue personnalisé
+if 'user_name' in st.session_state:
+    st.set_page_config(page_title=f"Visualisation Foot - {st.session_state['user_name']}", layout="wide")
+    st.title(f"⚽ Outil de Visualisation de Données Footballistiques - Bienvenue, {st.session_state['user_name']} !")
+else:
+    st.set_page_config(page_title="Visualisation Foot", layout="wide")
+    st.title("Outil de Visualisation de Données Footballistiques")
+
 # --- Upload CSV ---
 st.sidebar.header("📁 Données")
 uploaded_file = st.sidebar.file_uploader("Importer un fichier CSV", type=["csv"])
