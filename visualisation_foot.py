@@ -20,21 +20,37 @@ from fpdf import FPDF
 from tempfile import NamedTemporaryFile
 
 # --- FONCTIONS D'AUTHENTIFICATION (NOUVEAU) ---
-# Chemin vers le fichier "base de données" simulée
-USER_DB_FILE = "authorized_users.json"
+# Chemin vers le fichier "base de données" simulée pour les utilisateurs inscrits
+REGISTERED_USERS_FILE = "registered_users.json"
+AUTHORIZED_USERS_FILE = "authorized_users.json" # IDs autorisés
+
+def load_registered_users():
+    """Charge la liste des utilisateurs inscrits depuis un fichier JSON."""
+    try:
+        with open(REGISTERED_USERS_FILE, "r") as f:
+            # Ce fichier contiendra {user_id: user_name}
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_registered_user(user_id, user_name):
+    """Sauvegarde un nouvel utilisateur inscrit dans le fichier JSON."""
+    registered = load_registered_users()
+    registered[user_id] = user_name
+    with open(REGISTERED_USERS_FILE, "w") as f:
+        json.dump(registered, f)
 
 def load_authorized_users():
     """Charge la liste des utilisateurs autorisés depuis un fichier JSON."""
     try:
-        with open(USER_DB_FILE, "r") as f:
+        with open(AUTHORIZED_USERS_FILE, "r") as f:
             return set(json.load(f))
     except FileNotFoundError:
-        # Si le fichier n'existe pas, créer un ensemble vide
         return set()
 
 def save_authorized_users(users_set):
     """Sauvegarde la liste des utilisateurs autorisés dans un fichier JSON."""
-    with open(USER_DB_FILE, "w") as f:
+    with open(AUTHORIZED_USERS_FILE, "w") as f:
         json.dump(list(users_set), f)
 
 def is_user_authorized():
@@ -76,51 +92,70 @@ def login_page():
     
     with tab1:
         st.markdown("**Créez un compte pour commencer.**")
+        # Demander le nom d'utilisateur (Identifiant Unique personnalisé)
+        new_user_id = st.text_input("Choisissez votre Identifiant Unique", key="new_user_id", help="Un nom unique que vous choisirez.")
         new_user_name = st.text_input("Votre Nom (optionnel)", key="new_name")
-        if st.button("Créer un Compte & Obtenir un Identifiant"):
-            # Générer un identifiant unique
-            user_id = str(uuid.uuid4())
-            # Stocker dans la session
-            st.session_state['logged_in'] = True
-            st.session_state['user_id'] = user_id
-            st.session_state['user_name'] = new_user_name if new_user_name else "Utilisateur"
-            st.success(f"Compte créé avec succès ! Bienvenue, {st.session_state['user_name']} !")
-            st.info(f"Votre **Identifiant Unique** est : `{user_id}`")
-            st.warning("⚠️ **Important :** Conservez cet identifiant. Vous en aurez besoin pour activer votre abonnement.")
-            st.markdown("**Prochaine étape :** Procédez au paiement mensuel.")
-            # Bouton pour aller vers le paiement (à configurer avec votre lien Stripe)
-            st.link_button("💳 Procéder au Paiement Mensuel", "https://buy.stripe.com/test_8x228qfqfbeS5Zed0ldEs00")
-            st.markdown("*(Pour l'instant, le paiement est simulé. Contactez l'administrateur avec votre ID pour activation.)*")
-            time.sleep(2) # Laisser le message s'afficher
-            # On ne recharge pas ici pour montrer le message
+        
+        if st.button("Créer un Compte"):
+            if not new_user_id:
+                st.error("Veuillez choisir un identifiant.")
+            else:
+                # Vérifier si l'identifiant est déjà pris
+                registered_users = load_registered_users()
+                authorized_users = load_authorized_users()
+                
+                if new_user_id in registered_users or new_user_id in authorized_users:
+                    st.error("Cet identifiant est déjà pris. Veuillez en choisir un autre.")
+                else:
+                    # Enregistrer l'utilisateur (non autorisé)
+                    save_registered_user(new_user_id, new_user_name if new_user_name else "Utilisateur")
+                    # Stocker dans la session
+                    st.session_state['logged_in'] = True
+                    st.session_state['user_id'] = new_user_id # Utiliser l'ID choisi
+                    st.session_state['user_name'] = new_user_name if new_user_name else "Utilisateur"
+                    st.success(f"Compte créé avec succès ! Bienvenue, {st.session_state['user_name']} !")
+                    st.info(f"Votre **Identifiant Unique** est : `{new_user_id}`")
+                    st.warning("⚠️ **Important :** Conservez cet identifiant. Vous en aurez besoin pour vous connecter et activer votre abonnement.")
+                    st.markdown("**Prochaine étape :** Procédez au paiement mensuel.")
+                    st.link_button("💳 Procéder au Paiement Mensuel", "https://buy.stripe.com/test_8x228qfqfbeS5Zed0ldEs00")
+                    st.markdown("*(Pour l'instant, le paiement est simulé. Contactez l'administrateur avec votre ID pour activation.)*")
+                    time.sleep(2)
+                    # Ne pas recharger ici pour montrer le message
 
     with tab2:
         st.markdown("**Connectez-vous avec votre identifiant unique.**")
+        # L'utilisateur entre l'identifiant qu'il a choisi
         user_id_input = st.text_input("Votre Identifiant Unique", key="login_id")
-        user_name_input = st.text_input("Votre Nom (optionnel)", key="login_name")
+        user_name_input = st.text_input("Votre Nom (optionnel, si vous n'en avez pas défini un)", key="login_name")
         if st.button("Se Connecter"):
             if user_id_input:
                 # Charger les utilisateurs autorisés
                 authorized_users = load_authorized_users()
                 # Vérifier si l'ID est autorisé
                 if user_id_input in authorized_users:
+                    # L'utilisateur est autorisé, on le connecte
                     st.session_state['logged_in'] = True
                     st.session_state['user_id'] = user_id_input
-                    st.session_state['user_name'] = user_name_input if user_name_input else "Utilisateur"
+                    # On peut essayer de récupérer le nom s'il a été enregistré
+                    registered_users = load_registered_users()
+                    st.session_state['user_name'] = registered_users.get(user_id_input, user_name_input if user_name_input else "Utilisateur")
                     st.success(f"Connexion réussie ! Bienvenue, {st.session_state['user_name']} !")
                     time.sleep(1)
                     st.rerun() # Recharger pour afficher l'application principale
                 else:
-                    # L'utilisateur existe mais n'est pas encore autorisé
-                    st.session_state['logged_in'] = True # On le connecte temporairement
-                    st.session_state['user_id'] = user_id_input
-                    st.session_state['user_name'] = user_name_input if user_name_input else "Utilisateur"
-                    st.info(f"Bonjour, {st.session_state['user_name']} ! Votre identifiant est reconnu.")
-                    st.warning("🔒 Votre compte n'est pas encore activé. Veuillez vérifier que votre abonnement est en cours.")
-                    # Bouton pour aller vers le paiement
-                    st.link_button("💳 Vérifier/Procéder au Paiement", "https://buy.stripe.com/test_8x228qfqfbeS5Zed0ldEs00")
-                    st.markdown("*(Si vous avez déjà payé, contactez l'administrateur avec votre ID.)*")
-                    # On ne recharge pas ici pour montrer le message
+                    # L'utilisateur existe (normalement) mais n'est pas encore autorisé
+                    # Vérifier s'il est dans la liste des inscrits
+                    registered_users = load_registered_users()
+                    if user_id_input in registered_users:
+                        st.session_state['logged_in'] = True # On le connecte temporairement
+                        st.session_state['user_id'] = user_id_input
+                        st.session_state['user_name'] = registered_users.get(user_id_input, user_name_input if user_name_input else "Utilisateur")
+                        st.info(f"Bonjour, {st.session_state['user_name']} ! Votre identifiant est reconnu.")
+                        st.warning("🔒 Votre compte n'est pas encore activé. Veuillez vérifier que votre abonnement est en cours.")
+                        st.link_button("💳 Vérifier/Procéder au Paiement", "https://buy.stripe.com/test_8x228qfqfbeS5Zed0ldEs00")
+                        st.markdown("*(Si vous avez déjà payé, contactez l'administrateur avec votre ID.)*")
+                    else:
+                        st.error("Identifiant non reconnu. Veuillez vérifier ou créer un compte.")
             else:
                 st.error("Veuillez entrer un identifiant.")
 
@@ -821,3 +856,4 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                     os.unlink(img_path)
                 except:
                     pass
+s
