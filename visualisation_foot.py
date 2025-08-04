@@ -24,9 +24,12 @@ import base64
 
 # --- FONCTIONS D'AUTHENTIFICATION (NOUVEAU) ---
 # Chemins vers les fichiers "base de données" simulée
-USER_DB_FILE = "registered_users.json" # Stocke les identifiants et mots de passe
+USER_DB_FILE = "registered_users.json" # Stocke les identifiants et mots de passe hashés
 AUTHORIZED_USERS_FILE = "authorized_users.json" # Stocke les identifiants autorisés
+# Mot de passe admin (devrait être dans un secret, mais pour simplifier...)
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123") # Changez-le dans les secrets de déploiement
+# Identifiant spécial pour l'administrateur (optionnel, pour une connexion directe sans création de compte)
+ADMIN_USERNAME = "admin"
 
 def hash_password(password):
     """Hash un mot de passe avec SHA-256."""
@@ -60,20 +63,31 @@ def save_authorized_users(users_set):
     with open(AUTHORIZED_USERS_FILE, "w") as f:
         json.dump(list(users_set), f)
 
-def is_user_authorized():
-    """Vérifie si l'utilisateur actuel est connecté et autorisé."""
-    if 'logged_in' not in st.session_state or not st.session_state['logged_in']:
-        return False
-    if 'username' not in st.session_state:
-        return False
-    
-    authorized_users = load_authorized_users()
-    return st.session_state['username'] in authorized_users
-
 def is_valid_username(username):
     """Vérifie si un nom d'utilisateur est valide."""
     # Doit contenir entre 3 et 20 caractères, uniquement lettres, chiffres, underscore ou tiret
     return bool(re.match(r"^[a-zA-Z0-9_-]{3,20}$", username))
+
+def is_user_authorized():
+    """
+    Vérifie si l'utilisateur actuel est connecté et autorisé.
+    Pour l'administrateur, vérifie le mot de passe admin stocké.
+    Pour les utilisateurs normaux, vérifie s'ils sont dans la liste des autorisés.
+    """
+    # Vérifier si l'utilisateur est connecté (session_state)
+    if 'logged_in' not in st.session_state or not st.session_state['logged_in']:
+        return False
+    
+    # Vérifier si c'est l'administrateur (spécial ou enregistré)
+    if 'is_admin' in st.session_state and st.session_state['is_admin']:
+        return True
+        
+    # Vérifier si c'est un utilisateur normal connecté avec un identifiant
+    if 'username' in st.session_state:
+        authorized_users = load_authorized_users()
+        return st.session_state['username'] in authorized_users
+    
+    return False
 
 def login_page():
     """Affiche la page de connexion/inscription."""
@@ -95,6 +109,7 @@ def login_page():
     st.markdown("---")
     st.subheader("🔐 Accès Utilisateur")
     
+    # Tabs pour Inscription / Connexion
     tab1, tab2 = st.tabs(["📝 Nouvel Utilisateur", "🔑 Déjà Inscrit"])
     
     with tab1:
@@ -118,49 +133,67 @@ def login_page():
                     st.session_state['logged_in'] = True
                     st.session_state['username'] = new_username
                     st.success(f"Compte créé avec succès ! Bienvenue, {new_username} !")
-                    st.info("Votre compte est créé, mais il n'est pas encore activé.")
+                    st.info(f"Votre **Identifiant Unique** est : `{new_username}`")
+                    st.warning("⚠️ **Important :** Conservez cet identifiant. Vous en aurez besoin pour activer votre abonnement.")
                     st.markdown("**Prochaine étape :** Procédez au paiement mensuel.")
+                    # Bouton pour aller vers le paiement (à configurer avec votre lien Stripe)
                     st.link_button("💳 Procéder au Paiement Mensuel", "https://buy.stripe.com/test_aFa9AS91R82G2N29O9dEs01")
-                    st.markdown("*(Après le paiement, contactez l'administrateur avec votre identifiant pour activation.)*")
-                    time.sleep(2)
+                    st.markdown("*(Pour l'instant, le paiement est simulé. Contactez l'administrateur avec votre ID pour activation.)*")
+                    time.sleep(2) # Laisser le message s'afficher
+                    # On ne recharge pas ici pour montrer le message
 
     with tab2:
-        st.markdown("**Connectez-vous avec votre identifiant.**")
+        st.markdown("**Connectez-vous avec votre identifiant unique.**")
         username_input = st.text_input("Votre Identifiant Unique", key="login_username")
         password_input = st.text_input("Votre Mot de passe", type="password", key="login_password")
         if st.button("Se Connecter"):
             if username_input and password_input:
+                # Cas spécial : Connexion administrateur directe (si ADMIN_USERNAME est utilisé)
+                if username_input == ADMIN_USERNAME and password_input == ADMIN_PASSWORD:
+                    st.session_state['logged_in'] = True
+                    st.session_state['username'] = ADMIN_USERNAME
+                    st.session_state['is_admin'] = True # Marquer comme admin
+                    st.success(f"Connexion administrateur réussie ! Bienvenue, {ADMIN_USERNAME} !")
+                    time.sleep(1)
+                    st.rerun() # Recharger pour afficher l'application principale
+                
+                # Cas normal : Vérification des utilisateurs enregistrés
                 registered_users = load_registered_users()
                 password_hash = hash_password(password_input)
                 
                 if username_input in registered_users and registered_users[username_input] == password_hash:
                     st.session_state['logged_in'] = True
                     st.session_state['username'] = username_input
+                    # Ne pas marquer comme admin ici
                     
                     authorized_users = load_authorized_users()
                     if username_input in authorized_users:
                         st.success(f"Connexion réussie ! Bienvenue, {username_input} !")
                         time.sleep(1)
-                        st.rerun()
+                        st.rerun() # Recharger pour afficher l'application principale
                     else:
-                        st.info(f"Bonjour, {username_input} ! Votre compte existe mais n'est pas encore activé.")
+                        # L'utilisateur existe (normalement) mais n'est pas encore autorisé
+                        st.info(f"Bonjour, {username_input} ! Votre identifiant est reconnu.")
                         st.warning("🔒 Votre compte n'est pas encore activé. Veuillez vérifier que votre abonnement est en cours.")
+                        # Bouton pour aller vers le paiement
                         st.link_button("💳 Vérifier/Procéder au Paiement", "https://buy.stripe.com/test_aFa9AS91R82G2N29O9dEs01")
-                        st.markdown("*(Si vous avez déjà payé, contactez l'administrateur avec votre identifiant.)*")
+                        st.markdown("*(Si vous avez déjà payé, contactez l'administrateur avec votre ID.)*")
+                        # On ne recharge pas ici pour montrer le message
                 else:
                     st.error("Identifiant ou mot de passe incorrect.")
             else:
-                st.error("Veuillez remplir tous les champs.")
+                st.error("Veuillez entrer votre identifiant et votre mot de passe.")
 
     # --- Section Admin (pour vous) ---
     st.markdown("---")
     with st.expander("🛠️ Panneau d'Administration (Pour vous)"):
-        admin_password = st.text_input("Mot de passe administrateur", type="password")
-        if admin_password == ADMIN_PASSWORD:
-            st.success("Accès administrateur")
+        admin_password_input = st.text_input("Mot de passe administrateur", type="password")
+        # Vérifier si le mot de passe est correct
+        if admin_password_input == ADMIN_PASSWORD:
+            st.success("✅ Accès administrateur")
             
             st.subheader("Ajouter un utilisateur autorisé")
-            user_to_add = st.text_input("Identifiant de l'utilisateur à autoriser (après paiement)")
+            user_to_add = st.text_input("Identifiant de l'utilisateur à autoriser (doit exister)")
             if st.button("Autoriser l'Utilisateur"):
                 if user_to_add:
                     registered_users = load_registered_users()
@@ -174,26 +207,16 @@ def login_page():
                 else:
                     st.warning("Veuillez entrer un identifiant.")
             
-            st.subheader("Liste des utilisateurs enregistrés")
-            if st.button("Voir la liste des utilisateurs enregistrés"):
-                registered_users = load_registered_users()
-                if registered_users:
-                    st.write("Utilisateurs enregistrés :")
-                    st.text_area("Liste des identifiants", value="\n".join(registered_users.keys()), height=150, key="admin_registered_list")
-                else:
-                    st.info("Aucun utilisateur enregistré pour le moment.")
-            
-            st.subheader("Liste des utilisateurs autorisés")
             if st.button("Voir la liste des utilisateurs autorisés"):
                 authorized_users = load_authorized_users()
                 if authorized_users:
                     st.write("Utilisateurs autorisés :")
-                    st.text_area("Liste des identifiants", value="\n".join(authorized_users), height=150, key="admin_authorized_list")
+                    # Afficher dans un textarea pour faciliter la copie
+                    st.text_area("Liste des ID", value="\n".join(authorized_users), height=150, key="admin_user_list")
                 else:
                     st.info("Aucun utilisateur autorisé pour le moment.")
             
-            st.subheader("Retirer un utilisateur autorisé")
-            user_to_remove = st.text_input("Identifiant de l'utilisateur à retirer")
+            user_to_remove = st.text_input("Retirer un ID utilisateur")
             if st.button("Retirer l'Utilisateur"):
                 if user_to_remove:
                     authorized_users = load_authorized_users()
@@ -201,32 +224,41 @@ def login_page():
                         authorized_users.remove(user_to_remove)
                         save_authorized_users(authorized_users)
                         st.success(f"Utilisateur `{user_to_remove}` retiré avec succès.")
+                        # Si l'utilisateur retiré est l'utilisateur actuel, le déconnecter
                         if 'username' in st.session_state and st.session_state['username'] == user_to_remove:
                             st.session_state['logged_in'] = False
-                            del st.session_state['username']
+                            if 'username' in st.session_state: del st.session_state['username']
+                            if 'is_admin' in st.session_state: del st.session_state['is_admin']
                             st.info("Votre accès a été révoqué. Vous avez été déconnecté.")
                     else:
-                        st.warning("Cet identifiant n'est pas dans la liste des utilisateurs autorisés.")
+                        st.warning("ID utilisateur non trouvé.")
                 else:
-                    st.warning("Veuillez entrer un identifiant.")
-        elif admin_password:
-            st.error("Mot de passe administrateur incorrect.")
+                    st.warning("Veuillez entrer un ID utilisateur.")
+        elif admin_password_input:
+            st.error("🔐 Mot de passe administrateur incorrect.")
 
-# --- VÉRIFICATION D'ACCÈS AU DÉBUT DU SCRIPT ---
+# --- VÉRIFICATION D'ACCÈS AU DÉBUT DU SCRIPT (NOUVEAU) ---
+# Vérifier si l'utilisateur est autorisé au début de l'exécution
 if not is_user_authorized():
+    # Si l'utilisateur n'est pas connecté ou pas autorisé, afficher la page de login
     login_page()
     
+    # Permettre la connexion temporaire pour voir le message
     if 'logged_in' in st.session_state and st.session_state['logged_in']:
+        # Afficher un message personnalisé
         if 'username' in st.session_state:
             st.markdown(f"Bonjour, **{st.session_state['username']}** !")
         
+        # Afficher le bouton de déconnexion
         if st.button("Se Déconnecter"):
-            for key in list(st.session_state.keys()):
+            # Nettoyer la session
+            keys_to_delete = [key for key in st.session_state.keys() if key.startswith('logged_in') or key.startswith('user_') or key.startswith('is_')]
+            for key in keys_to_delete:
                 del st.session_state[key]
             st.success("Vous avez été déconnecté.")
             st.rerun()
     
-    st.stop()
+    st.stop() # Arrêter l'exécution du reste du code
 
 # --- CONTENU DE L'APPLICATION PRINCIPALE (votre code existant commence ici) ---
 
@@ -238,7 +270,6 @@ else:
     st.set_page_config(page_title="Visualisation Foot", layout="wide")
     st.title("Outil de Visualisation de Données Footballistiques")
 
-# ... (le reste de votre code existant reste inchangé) ...
 # --- Upload CSV ---
 st.sidebar.header("📁 Données")
 uploaded_file = st.sidebar.file_uploader("Importer un fichier CSV", type=["csv"])
