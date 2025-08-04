@@ -6,6 +6,7 @@ import json
 import time
 import os
 import hashlib
+import hmac
 import re
 
 # --- IMPORTS EXISTANTS (inchangés, à conserver) ---
@@ -26,10 +27,11 @@ import base64
 # Chemins vers les fichiers "base de données" simulée
 USER_DB_FILE = "registered_users.json" # Stocke les identifiants et mots de passe hashés
 AUTHORIZED_USERS_FILE = "authorized_users.json" # Stocke les identifiants autorisés
+# Mot de passe admin (devrait être dans un secret, mais pour simplifier...)
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123") # Changez-le dans les secrets de déploiement
 
 def hash_password(password):
-    """Hash un mot de passe avec SHA-256."""
+    """Hash un mot de passe avec SHA-256 (basique, pas bcrypt mais fonctionnel pour cet exemple)."""
     return hashlib.sha256(password.encode()).hexdigest()
 
 def load_registered_users():
@@ -60,20 +62,31 @@ def save_authorized_users(users_set):
     with open(AUTHORIZED_USERS_FILE, "w") as f:
         json.dump(list(users_set), f)
 
-def is_user_authorized():
-    """Vérifie si l'utilisateur actuel est connecté et autorisé."""
-    if 'logged_in' not in st.session_state or not st.session_state['logged_in']:
-        return False
-    if 'username' not in st.session_state:
-        return False
-    
-    authorized_users = load_authorized_users()
-    return st.session_state['username'] in authorized_users
-
 def is_valid_username(username):
     """Vérifie si un nom d'utilisateur est valide."""
     # Doit contenir entre 3 et 20 caractères, uniquement lettres, chiffres, underscore ou tiret
     return bool(re.match(r"^[a-zA-Z0-9_-]{3,20}$", username))
+
+def is_user_authorized():
+    """
+    Vérifie si l'utilisateur actuel est connecté et autorisé.
+    Pour l'administrateur, vérifie le mot de passe admin stocké.
+    Pour les utilisateurs normaux, vérifie s'ils sont dans la liste des autorisés.
+    """
+    # Vérifier si l'utilisateur est connecté (session_state)
+    if 'logged_in' not in st.session_state or not st.session_state['logged_in']:
+        return False
+    
+    # Vérifier si c'est l'administrateur (spécial ou enregistré)
+    if 'is_admin' in st.session_state and st.session_state['is_admin']:
+        return True
+        
+    # Vérifier si c'est un utilisateur normal connecté avec un identifiant
+    if 'username' in st.session_state:
+        authorized_users = load_authorized_users()
+        return st.session_state['username'] in authorized_users
+    
+    return False
 
 def login_page():
     """Affiche la page de connexion/inscription."""
@@ -95,6 +108,7 @@ def login_page():
     st.markdown("---")
     st.subheader("🔐 Accès Utilisateur")
     
+    # Tabs pour Inscription / Connexion
     tab1, tab2 = st.tabs(["📝 Nouvel Utilisateur", "🔑 Déjà Inscrit"])
     
     with tab1:
@@ -116,65 +130,79 @@ def login_page():
                     password_hash = hash_password(new_user_password)
                     save_registered_user(new_username, password_hash)
                     st.session_state['logged_in'] = True
-                    st.session_state['username'] = new_username # Utiliser l'identifiant choisi
+                    st.session_state['username'] = new_username
                     st.success(f"Compte créé avec succès ! Bienvenue, {new_username} !")
                     st.info(f"Votre **Identifiant Unique** est : `{new_username}`")
-                    st.warning("⚠️ **Important :** Conservez cet identifiant. Vous en aurez besoin pour vous connecter et activer votre abonnement.")
+                    st.warning("⚠️ **Important :** Conservez cet identifiant. Vous en aurez besoin pour activer votre abonnement.")
                     st.markdown("**Prochaine étape :** Procédez au paiement mensuel.")
                     # Bouton pour aller vers le paiement (à configurer avec votre lien Stripe)
-                    st.link_button("💳 Procéder au Paiement Mensuel", "https://buy.stripe.com/test_aFa9AS91R82G2N29O9dEs01")
+                    st.link_button("💳 Procéder au Paiement Mensuel", "https://buy.stripe.com/test_8x228qfqfbeS5Zed0ldEs00")
                     st.markdown("*(Pour l'instant, le paiement est simulé. Contactez l'administrateur avec votre ID pour activation.)*")
                     time.sleep(2) # Laisser le message s'afficher
-                    # Ne pas recharger ici pour montrer le message
+                    # On ne recharge pas ici pour montrer le message
 
     with tab2:
         st.markdown("**Connectez-vous avec votre identifiant unique.**")
-        username_input = st.text_input("Votre Identifiant Unique", key="login_id")
+        username_input = st.text_input("Votre Identifiant Unique", key="login_username")
         password_input = st.text_input("Votre Mot de passe", type="password", key="login_password")
         if st.button("Se Connecter"):
             if username_input and password_input:
+                # Cas spécial : Connexion administrateur directe (si ADMIN_USERNAME est utilisé)
+                # if username_input == ADMIN_USERNAME and password_input == ADMIN_PASSWORD:
+                #     st.session_state['logged_in'] = True
+                #     st.session_state['username'] = ADMIN_USERNAME
+                #     st.session_state['is_admin'] = True # Marquer comme admin
+                #     st.success(f"Connexion administrateur réussie ! Bienvenue, {ADMIN_USERNAME} !")
+                #     time.sleep(1)
+                #     st.rerun() # Recharger pour afficher l'application principale
+                
+                # Cas normal : Vérification des utilisateurs enregistrés
                 registered_users = load_registered_users()
                 password_hash = hash_password(password_input)
                 
                 if username_input in registered_users and registered_users[username_input] == password_hash:
                     st.session_state['logged_in'] = True
-                    st.session_state['username'] = username_input # Utiliser l'identifiant saisi
-                    st.success(f"Connexion réussie ! Bienvenue, {username_input} !")
-                    time.sleep(1)
-                    st.rerun() # Recharger pour afficher l'application principale
-                else:
-                    # L'utilisateur existe (normalement) mais n'est pas encore autorisé
-                    # Vérifier s'il est dans la liste des inscrits
-                    registered_users = load_registered_users()
-                    if username_input in registered_users:
+                    st.session_state['username'] = username_input
+                    # Ne pas marquer comme admin ici
+                    
+                    authorized_users = load_authorized_users()
+                    if username_input in authorized_users:
+                        st.success(f"Connexion réussie ! Bienvenue, {username_input} !")
+                        time.sleep(1)
+                        st.rerun() # Recharger pour afficher l'application principale
+                    else:
+                        # L'utilisateur existe (normalement) mais n'est pas encore autorisé
                         st.session_state['logged_in'] = True # On le connecte temporairement
                         st.session_state['username'] = username_input
                         st.info(f"Bonjour, {username_input} ! Votre identifiant est reconnu.")
                         st.warning("🔒 Votre compte n'est pas encore activé. Veuillez vérifier que votre abonnement est en cours.")
                         # Bouton pour aller vers le paiement
-                        st.link_button("💳 Vérifier/Procéder au Paiement", "https://buy.stripe.com/test_aFa9AS91R82G2N29O9dEs01")
+                        st.link_button("💳 Vérifier/Procéder au Paiement", "https://buy.stripe.com/test_8x228qfqfbeS5Zed0ldEs00")
                         st.markdown("*(Si vous avez déjà payé, contactez l'administrateur avec votre ID.)*")
                         # On ne recharge pas ici pour montrer le message
-                    else:
-                        st.error("Identifiant ou mot de passe incorrect.")
+                else:
+                    st.error("Identifiant ou mot de passe incorrect.")
             else:
-                st.error("Veuillez entrer un identifiant et un mot de passe.")
+                st.error("Veuillez entrer votre identifiant et votre mot de passe.")
 
     # --- Section Admin (pour vous) ---
     st.markdown("---")
     with st.expander("🛠️ Panneau d'Administration (Pour vous)"):
-        admin_password = st.text_input("Mot de passe administrateur", type="password")
-        if admin_password == ADMIN_PASSWORD:
-            st.success("Accès administrateur")
-            user_id_to_add = st.text_input("Ajouter un ID utilisateur (après paiement)")
+        admin_password_input = st.text_input("Mot de passe administrateur", type="password")
+        # Vérifier si le mot de passe est correct
+        if admin_password_input == ADMIN_PASSWORD:
+            st.success("✅ Accès administrateur")
+            
+            st.subheader("Ajouter un utilisateur autorisé")
+            user_to_add = st.text_input("Identifiant de l'utilisateur à autoriser (doit exister)")
             if st.button("Autoriser l'Utilisateur"):
-                if user_id_to_add:
+                if user_to_add:
                     registered_users = load_registered_users()
-                    if user_id_to_add in registered_users:
+                    if user_to_add in registered_users:
                         authorized_users = load_authorized_users()
-                        authorized_users.add(user_id_to_add)
+                        authorized_users.add(user_to_add)
                         save_authorized_users(authorized_users)
-                        st.success(f"Utilisateur `{user_id_to_add}` autorisé avec succès !")
+                        st.success(f"Utilisateur `{user_to_add}` autorisé avec succès !")
                     else:
                         st.warning("Cet identifiant n'existe pas dans la base des utilisateurs enregistrés.")
                 else:
@@ -189,25 +217,26 @@ def login_page():
                 else:
                     st.info("Aucun utilisateur autorisé pour le moment.")
             
-            user_id_to_remove = st.text_input("Retirer un ID utilisateur")
+            user_to_remove = st.text_input("Retirer un ID utilisateur")
             if st.button("Retirer l'Utilisateur"):
-                if user_id_to_remove:
+                if user_to_remove:
                     authorized_users = load_authorized_users()
-                    if user_id_to_remove in authorized_users:
-                        authorized_users.remove(user_id_to_remove)
+                    if user_to_remove in authorized_users:
+                        authorized_users.remove(user_to_remove)
                         save_authorized_users(authorized_users)
-                        st.success(f"Utilisateur `{user_id_to_remove}` retiré avec succès.")
+                        st.success(f"Utilisateur `{user_to_remove}` retiré avec succès.")
                         # Si l'utilisateur retiré est l'utilisateur actuel, le déconnecter
-                        if 'username' in st.session_state and st.session_state['username'] == user_id_to_remove:
+                        if 'username' in st.session_state and st.session_state['username'] == user_to_remove:
                             st.session_state['logged_in'] = False
                             if 'username' in st.session_state: del st.session_state['username']
+                            if 'is_admin' in st.session_state: del st.session_state['is_admin']
                             st.info("Votre accès a été révoqué. Vous avez été déconnecté.")
                     else:
                         st.warning("ID utilisateur non trouvé.")
                 else:
                     st.warning("Veuillez entrer un ID utilisateur.")
-        elif admin_password:
-            st.error("Mot de passe administrateur incorrect.")
+        elif admin_password_input:
+            st.error("🔐 Mot de passe administrateur incorrect.")
 
 # --- VÉRIFICATION D'ACCÈS AU DÉBUT DU SCRIPT (NOUVEAU) ---
 # Vérifier si l'utilisateur est autorisé au début de l'exécution
@@ -224,7 +253,7 @@ if not is_user_authorized():
         # Afficher le bouton de déconnexion
         if st.button("Se Déconnecter"):
             # Nettoyer la session
-            keys_to_delete = [key for key in st.session_state.keys() if key.startswith('logged_in') or key.startswith('user_')]
+            keys_to_delete = [key for key in st.session_state.keys() if key.startswith('logged_in') or key.startswith('user_') or key.startswith('is_')]
             for key in keys_to_delete:
                 del st.session_state[key]
             st.success("Vous avez été déconnecté.")
@@ -242,7 +271,6 @@ else:
     st.set_page_config(page_title="Visualisation Foot", layout="wide")
     st.title("Outil de Visualisation de Données Footballistiques")
 
-# ... (le reste de votre code existant reste inchangé) ...
 # --- Upload CSV ---
 st.sidebar.header("📁 Données")
 uploaded_file = st.sidebar.file_uploader("Importer un fichier CSV", type=["csv"])
@@ -309,27 +337,26 @@ displayed_events = st.sidebar.multiselect(
     options=event_options,
     default=["Pass"] if "Pass" in event_options else event_options[:1]
 )
+
 # --- Classification par zones de terrain (AVANT les filtres pour avoir les options de filtre) ---
+# *** MODIFIÉE : SANS SURFACE DE RÉPARATION ***
 def classify_zone(x, y):
     """
     Classifie un point (x, y) dans une zone du terrain.
     Les zones sont mutuellement exclusives.
-    Ordre de priorité: Surface Rép. > Haute > Médiane > Basse
+    Ordre de priorité: Haute > Médiane > Basse
     INVERSÉ : Basse et Haute sont interchangées
     """
-    # 1. Surface de Réparation (la plus spécifique, prioritaire)
-    if 102 < x <= 120 and 18 < y < 62:
-        return 'Surface Rép.'
-    # 2. Haute (approche de la surface adverse, mais en dehors de la Surface Rép.)
+    # 1. Haute (approche de la surface adverse, mais en dehors de la Surface Rép.)
     # INVERSÉ : Haute est maintenant près du fond de son propre camp (ancienne Basse)
-    elif 0 <= x < 36:
+    if 0 <= x < 36:
         return 'Haute'
-    # 3. Médiane
+    # 2. Médiane
     elif 36 <= x <= 90:
         return 'Médiane'
-    # 4. Basse (fond de son propre camp)
+    # 3. Basse (fond de son propre camp)
     # INVERSÉ : Basse est maintenant près de la surface adverse (ancienne Haute)
-    elif 90 < x <= 102:
+    elif 90 < x <= 120: # Étendu à 120
         return 'Basse'
     else:
         # Pour les cas limites ou erreurs, on met par défaut dans une zone centrale
@@ -339,6 +366,7 @@ df['Zone_temp'] = df.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1
 zone_options = sorted(df['Zone_temp'].dropna().unique())
 del df['Zone_temp'] # Supprimer la colonne temporaire
 # Filtre par zone dans la sidebar (avant les options de visualisation)
+# Note : La "Surface de Réparation" n'est plus une option
 selected_zones = st.sidebar.multiselect(
     "Zones du Terrain",
     options=zone_options,
@@ -375,15 +403,8 @@ with st.sidebar.expander("➕ Options Avancées"):
     scatter_alpha = st.slider("Opacité des points", min_value=0.1, max_value=1.0, value=0.8, step=0.1, key="scatter_alpha")
     st.markdown("**Heatmap**")
     heatmap_alpha = st.slider("Opacité de la heatmap", min_value=0.1, max_value=1.0, value=0.85, step=0.05, key="heatmap_alpha")
-    # NOUVEAUTÉS : Options avancées pour la heatmap
+    # NOUVEAUTÉS : Options avancées pour la heatmap (TYPE DE STATISTIQUE SUPPRIMÉ)
     st.markdown("**Options Avancées Heatmap**")
-    # Choix du type de statistique
-    heatmap_statistic = st.selectbox(
-        "Type de statistique",
-        options=['count', 'density'],
-        index=0,
-        help="Choisissez le type de statistique pour la heatmap."
-    )
     # Option pour masquer/afficher les labels
     show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True, key="show_heatmap_labels")
     # NOUVEAUTÉ : Option pour masquer les labels 0%
@@ -445,19 +466,19 @@ common_pitch_params = {
     'line_zorder': 2
 }
 fig_size = (8, 5.5) # Taille uniforme et légèrement ajustée
-# Définition des zones pour la visualisation
+# Définition des zones pour la visualisation (MODIFIÉE - SANS SURFACE DE RÉPARATION)
 # INVERSÉ : Les rectangles correspondent à la logique de classification interchangée
 zones_rects = {
     'Haute': (0, 0, 36, 80),      # Ancienne Basse
     'Médiane': (36, 0, 54, 80),   # 90-36=54
-    'Basse': (90, 0, 12, 80),     # Ancienne Haute (102-90=12)
-    'Surface Rép.': (102, 18, 18, 44) # 120-102=18, 62-18=44
+    'Basse': (90, 0, 30, 80),     # Ancienne Haute (120-90=30, ajusté)
+    # 'Surface Rép.' n'est plus définie ici
 }
 zone_colors = {
     'Haute': '#87CEEB',          # Bleu clair
     'Médiane': '#98FB98',        # Vert pâle
     'Basse': '#FFD700',          # Or
-    'Surface Rép.': '#FF6347'     # Rouge tomate
+    # 'Surface Rép.': '#FF6347'     # Rouge tomate
 }
 col_a, col_b = st.columns(2)
 # --- Terrain avec pourcentages ---
@@ -564,8 +585,9 @@ with col2:
         fig2.set_facecolor('white')
         df_filtered_hm = df_event if len(displayed_events) != 1 else df_event[df_event['Event'] == displayed_events[0]]
         if not df_filtered_hm.empty:
+            # Suppression de heatmap_statistic, utilisation directe de 'count'
             bin_statistic = pitch.bin_statistic(
-                df_filtered_hm['X'], df_filtered_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True
+                df_filtered_hm['X'], df_filtered_hm['Y'], statistic='count', bins=(6, 5), normalize=True
             )
             pitch.heatmap(bin_statistic, ax=ax2, cmap='Reds', edgecolor='white', alpha=heatmap_alpha)
             
