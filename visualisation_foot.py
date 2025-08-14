@@ -1,14 +1,11 @@
 # am-fcp.py
-
 # --- IMPORTS (ajouts pour l'authentification) ---
 import uuid
 import json
 import time
 import os
 import hashlib
-import hmac
 import re
-
 # --- IMPORTS EXISTANTS (inchangés, à conserver) ---
 import streamlit as st
 import pandas as pd
@@ -22,18 +19,17 @@ from matplotlib.patches import Patch # Pour la légende
 from fpdf import FPDF
 from tempfile import NamedTemporaryFile
 import base64
-
 # --- FONCTIONS D'AUTHENTIFICATION (NOUVEAU) ---
 # Chemins vers les fichiers "base de données" simulée
 USER_DB_FILE = "registered_users.json" # Stocke les identifiants et mots de passe hashés
 AUTHORIZED_USERS_FILE = "authorized_users.json" # Stocke les identifiants autorisés
-# Mot de passe admin (devrait être dans un secret, mais pour simplifier...)
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123") # Changez-le dans les secrets de déploiement
-
+# --- MODIFICATION ICI ---
+# Changement de la valeur par défaut du mot de passe admin
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "votre_mot_de_passe_ici") # Changez-le dans les secrets de déploiement
+# --- FIN DE LA MODIFICATION ---
 def hash_password(password):
-    """Hash un mot de passe avec SHA-256 (basique, pas bcrypt mais fonctionnel pour cet exemple)."""
+    """Hash un mot de passe avec SHA-256."""
     return hashlib.sha256(password.encode()).hexdigest()
-
 def load_registered_users():
     """Charge la liste des utilisateurs enregistrés depuis un fichier JSON."""
     try:
@@ -41,14 +37,12 @@ def load_registered_users():
             return json.load(f)
     except FileNotFoundError:
         return {}
-
 def save_registered_user(username, password_hash):
     """Sauvegarde un nouvel utilisateur enregistré dans le fichier JSON."""
     users = load_registered_users()
     users[username] = password_hash
     with open(USER_DB_FILE, "w") as f:
         json.dump(users, f)
-
 def load_authorized_users():
     """Charge la liste des utilisateurs autorisés depuis un fichier JSON."""
     try:
@@ -56,61 +50,38 @@ def load_authorized_users():
             return set(json.load(f))
     except FileNotFoundError:
         return set()
-
 def save_authorized_users(users_set):
     """Sauvegarde la liste des utilisateurs autorisés dans un fichier JSON."""
     with open(AUTHORIZED_USERS_FILE, "w") as f:
         json.dump(list(users_set), f)
-
+def is_user_authorized():
+    """Vérifie si l'utilisateur actuel est connecté et autorisé."""
+    if 'logged_in' not in st.session_state or not st.session_state['logged_in']:
+        return False
+    if 'username' not in st.session_state:
+        return False
+    authorized_users = load_authorized_users()
+    return st.session_state['username'] in authorized_users
 def is_valid_username(username):
     """Vérifie si un nom d'utilisateur est valide."""
     # Doit contenir entre 3 et 20 caractères, uniquement lettres, chiffres, underscore ou tiret
     return bool(re.match(r"^[a-zA-Z0-9_-]{3,20}$", username))
-
-def is_user_authorized():
-    """
-    Vérifie si l'utilisateur actuel est connecté et autorisé.
-    Pour l'administrateur, vérifie le mot de passe admin stocké.
-    Pour les utilisateurs normaux, vérifie s'ils sont dans la liste des autorisés.
-    """
-    # Vérifier si l'utilisateur est connecté (session_state)
-    if 'logged_in' not in st.session_state or not st.session_state['logged_in']:
-        return False
-    
-    # Vérifier si c'est l'administrateur (spécial ou enregistré)
-    if 'is_admin' in st.session_state and st.session_state['is_admin']:
-        return True
-        
-    # Vérifier si c'est un utilisateur normal connecté avec un identifiant
-    if 'username' in st.session_state:
-        authorized_users = load_authorized_users()
-        return st.session_state['username'] in authorized_users
-    
-    return False
-
 def login_page():
     """Affiche la page de connexion/inscription."""
     st.title("⚽ Accès à l'Outil de Visualisation Footballistique")
-    
     st.markdown("""
     ### Bienvenue !
     Cet outil vous permet d'analyser et de visualiser vos données footballistiques.
-    
     **Fonctionnalités :**
     - Upload de fichiers CSV
     - Visualisation des événements sur le terrain
     - Génération de heatmaps
     - Création de rapports PDF détaillés
-    
     **Accès restreint :** Un abonnement mensuel est requis pour utiliser cet outil.
     """)
-
     st.markdown("---")
     st.subheader("🔐 Accès Utilisateur")
-    
-    # Tabs pour Inscription / Connexion
     tab1, tab2 = st.tabs(["📝 Nouvel Utilisateur", "🔑 Déjà Inscrit"])
-    
     with tab1:
         st.markdown("**Créez un compte pour commencer.**")
         new_username = st.text_input("Choisissez votre Identifiant Unique (3-20 caractères, lettres, chiffres, _ ou -)", key="new_username")
@@ -123,146 +94,120 @@ def login_page():
             else:
                 registered_users = load_registered_users()
                 authorized_users = load_authorized_users()
-                
                 if new_username in registered_users or new_username in authorized_users:
                     st.error("Cet identifiant est déjà pris. Veuillez en choisir un autre.")
                 else:
                     password_hash = hash_password(new_user_password)
                     save_registered_user(new_username, password_hash)
                     st.session_state['logged_in'] = True
-                    st.session_state['username'] = new_username
+                    st.session_state['username'] = new_username # Utiliser l'identifiant choisi
                     st.success(f"Compte créé avec succès ! Bienvenue, {new_username} !")
                     st.info(f"Votre **Identifiant Unique** est : `{new_username}`")
-                    st.warning("⚠️ **Important :** Conservez cet identifiant. Vous en aurez besoin pour activer votre abonnement.")
+                    st.warning("⚠️ **Important :** Conservez cet identifiant. Vous en aurez besoin pour vous connecter et activer votre abonnement.")
                     st.markdown("**Prochaine étape :** Procédez au paiement mensuel.")
                     # Bouton pour aller vers le paiement (à configurer avec votre lien Stripe)
-                    st.link_button("💳 Procéder au Paiement Mensuel", "https://buy.stripe.com/test_8x228qfqfbeS5Zed0ldEs00")
+                    st.link_button("💳 Procéder au Paiement Mensuel", "https://buy.stripe.com/test_aFa9AS91R82G2N29O9dEs01")
                     st.markdown("*(Pour l'instant, le paiement est simulé. Contactez l'administrateur avec votre ID pour activation.)*")
                     time.sleep(2) # Laisser le message s'afficher
-                    # On ne recharge pas ici pour montrer le message
-
+                    # Ne pas recharger ici pour montrer le message
     with tab2:
         st.markdown("**Connectez-vous avec votre identifiant unique.**")
-        username_input = st.text_input("Votre Identifiant Unique", key="login_username")
+        username_input = st.text_input("Votre Identifiant Unique", key="login_id")
         password_input = st.text_input("Votre Mot de passe", type="password", key="login_password")
         if st.button("Se Connecter"):
             if username_input and password_input:
-                # Cas spécial : Connexion administrateur directe (si ADMIN_USERNAME est utilisé)
-                # if username_input == ADMIN_USERNAME and password_input == ADMIN_PASSWORD:
-                #     st.session_state['logged_in'] = True
-                #     st.session_state['username'] = ADMIN_USERNAME
-                #     st.session_state['is_admin'] = True # Marquer comme admin
-                #     st.success(f"Connexion administrateur réussie ! Bienvenue, {ADMIN_USERNAME} !")
-                #     time.sleep(1)
-                #     st.rerun() # Recharger pour afficher l'application principale
-                
-                # Cas normal : Vérification des utilisateurs enregistrés
                 registered_users = load_registered_users()
                 password_hash = hash_password(password_input)
-                
                 if username_input in registered_users and registered_users[username_input] == password_hash:
                     st.session_state['logged_in'] = True
-                    st.session_state['username'] = username_input
-                    # Ne pas marquer comme admin ici
-                    
-                    authorized_users = load_authorized_users()
-                    if username_input in authorized_users:
-                        st.success(f"Connexion réussie ! Bienvenue, {username_input} !")
-                        time.sleep(1)
-                        st.rerun() # Recharger pour afficher l'application principale
-                    else:
-                        # L'utilisateur existe (normalement) mais n'est pas encore autorisé
+                    st.session_state['username'] = username_input # Utiliser l'identifiant saisi
+                    st.success(f"Connexion réussie ! Bienvenue, {username_input} !")
+                    time.sleep(1)
+                    st.rerun() # Recharger pour afficher l'application principale
+                else:
+                    # L'utilisateur existe (normalement) mais n'est pas encore autorisé
+                    # Vérifier s'il est dans la liste des inscrits
+                    registered_users = load_registered_users()
+                    if username_input in registered_users:
                         st.session_state['logged_in'] = True # On le connecte temporairement
                         st.session_state['username'] = username_input
                         st.info(f"Bonjour, {username_input} ! Votre identifiant est reconnu.")
                         st.warning("🔒 Votre compte n'est pas encore activé. Veuillez vérifier que votre abonnement est en cours.")
                         # Bouton pour aller vers le paiement
-                        st.link_button("💳 Vérifier/Procéder au Paiement", "https://buy.stripe.com/test_8x228qfqfbeS5Zed0ldEs00")
+                        st.link_button("💳 Vérifier/Procéder au Paiement", "https://buy.stripe.com/test_aFa9AS91R82G2N29O9dEs01")
                         st.markdown("*(Si vous avez déjà payé, contactez l'administrateur avec votre ID.)*")
                         # On ne recharge pas ici pour montrer le message
-                else:
-                    st.error("Identifiant ou mot de passe incorrect.")
+                    else:
+                        st.error("Identifiant ou mot de passe incorrect.")
             else:
-                st.error("Veuillez entrer votre identifiant et votre mot de passe.")
-
+                st.error("Veuillez entrer un identifiant et un mot de passe.")
     # --- Section Admin (pour vous) ---
     st.markdown("---")
     with st.expander("🛠️ Panneau d'Administration (Pour vous)"):
-        admin_password_input = st.text_input("Mot de passe administrateur", type="password")
-        # Vérifier si le mot de passe est correct
-        if admin_password_input == ADMIN_PASSWORD:
-            st.success("✅ Accès administrateur")
-            
-            st.subheader("Ajouter un utilisateur autorisé")
-            user_to_add = st.text_input("Identifiant de l'utilisateur à autoriser (doit exister)")
+        admin_password = st.text_input("Mot de passe administrateur", type="password")
+        if admin_password == ADMIN_PASSWORD:
+            st.success("Accès administrateur")
+            user_id_to_add = st.text_input("Ajouter un ID utilisateur (après paiement)")
             if st.button("Autoriser l'Utilisateur"):
-                if user_to_add:
+                if user_id_to_add:
                     registered_users = load_registered_users()
-                    if user_to_add in registered_users:
+                    if user_id_to_add in registered_users:
                         authorized_users = load_authorized_users()
-                        authorized_users.add(user_to_add)
+                        authorized_users.add(user_id_to_add)
                         save_authorized_users(authorized_users)
-                        st.success(f"Utilisateur `{user_to_add}` autorisé avec succès !")
+                        st.success(f"Utilisateur `{user_id_to_add}` autorisé avec succès !")
                     else:
                         st.warning("Cet identifiant n'existe pas dans la base des utilisateurs enregistrés.")
                 else:
                     st.warning("Veuillez entrer un identifiant.")
-            
             if st.button("Voir la liste des utilisateurs autorisés"):
                 authorized_users = load_authorized_users()
                 if authorized_users:
                     st.write("Utilisateurs autorisés :")
                     # Afficher dans un textarea pour faciliter la copie
-                    st.text_area("Liste des ID", value="\n".join(authorized_users), height=150, key="admin_user_list")
+                    st.text_area("Liste des ID", value="
+".join(authorized_users), height=150, key="admin_user_list")
                 else:
                     st.info("Aucun utilisateur autorisé pour le moment.")
-            
-            user_to_remove = st.text_input("Retirer un ID utilisateur")
+            user_id_to_remove = st.text_input("Retirer un ID utilisateur")
             if st.button("Retirer l'Utilisateur"):
-                if user_to_remove:
+                if user_id_to_remove:
                     authorized_users = load_authorized_users()
-                    if user_to_remove in authorized_users:
-                        authorized_users.remove(user_to_remove)
+                    if user_id_to_remove in authorized_users:
+                        authorized_users.remove(user_id_to_remove)
                         save_authorized_users(authorized_users)
-                        st.success(f"Utilisateur `{user_to_remove}` retiré avec succès.")
+                        st.success(f"Utilisateur `{user_id_to_remove}` retiré avec succès.")
                         # Si l'utilisateur retiré est l'utilisateur actuel, le déconnecter
-                        if 'username' in st.session_state and st.session_state['username'] == user_to_remove:
+                        if 'username' in st.session_state and st.session_state['username'] == user_id_to_remove:
                             st.session_state['logged_in'] = False
                             if 'username' in st.session_state: del st.session_state['username']
-                            if 'is_admin' in st.session_state: del st.session_state['is_admin']
                             st.info("Votre accès a été révoqué. Vous avez été déconnecté.")
                     else:
                         st.warning("ID utilisateur non trouvé.")
                 else:
                     st.warning("Veuillez entrer un ID utilisateur.")
-        elif admin_password_input:
-            st.error("🔐 Mot de passe administrateur incorrect.")
-
+        elif admin_password:
+            st.error("Mot de passe administrateur incorrect.")
 # --- VÉRIFICATION D'ACCÈS AU DÉBUT DU SCRIPT (NOUVEAU) ---
 # Vérifier si l'utilisateur est autorisé au début de l'exécution
 if not is_user_authorized():
     # Si l'utilisateur n'est pas connecté ou pas autorisé, afficher la page de login
     login_page()
-    
     # Permettre la connexion temporaire pour voir le message
     if 'logged_in' in st.session_state and st.session_state['logged_in']:
         # Afficher un message personnalisé
         if 'username' in st.session_state:
             st.markdown(f"Bonjour, **{st.session_state['username']}** !")
-        
         # Afficher le bouton de déconnexion
         if st.button("Se Déconnecter"):
             # Nettoyer la session
-            keys_to_delete = [key for key in st.session_state.keys() if key.startswith('logged_in') or key.startswith('user_') or key.startswith('is_')]
+            keys_to_delete = [key for key in st.session_state.keys() if key.startswith('logged_in') or key.startswith('user_')]
             for key in keys_to_delete:
                 del st.session_state[key]
             st.success("Vous avez été déconnecté.")
             st.rerun()
-    
     st.stop() # Arrêter l'exécution du reste du code
-
 # --- CONTENU DE L'APPLICATION PRINCIPALE (votre code existant commence ici) ---
-
 # Afficher un message de bienvenue personnalisé
 if 'username' in st.session_state:
     st.set_page_config(page_title=f"Visualisation Foot - {st.session_state['username']}", layout="wide")
@@ -270,7 +215,7 @@ if 'username' in st.session_state:
 else:
     st.set_page_config(page_title="Visualisation Foot", layout="wide")
     st.title("Outil de Visualisation de Données Footballistiques")
-
+# ... (le reste de votre code existant reste inchangé) ...
 # --- Upload CSV ---
 st.sidebar.header("📁 Données")
 uploaded_file = st.sidebar.file_uploader("Importer un fichier CSV", type=["csv"])
@@ -337,26 +282,27 @@ displayed_events = st.sidebar.multiselect(
     options=event_options,
     default=["Pass"] if "Pass" in event_options else event_options[:1]
 )
-
 # --- Classification par zones de terrain (AVANT les filtres pour avoir les options de filtre) ---
-# *** MODIFIÉE : SANS SURFACE DE RÉPARATION ***
 def classify_zone(x, y):
     """
     Classifie un point (x, y) dans une zone du terrain.
     Les zones sont mutuellement exclusives.
-    Ordre de priorité: Haute > Médiane > Basse
+    Ordre de priorité: Surface Rép. > Haute > Médiane > Basse
     INVERSÉ : Basse et Haute sont interchangées
     """
-    # 1. Haute (approche de la surface adverse, mais en dehors de la Surface Rép.)
+    # 1. Surface de Réparation (la plus spécifique, prioritaire)
+    if 102 < x <= 120 and 18 < y < 62:
+        return 'Surface Rép.'
+    # 2. Haute (approche de la surface adverse, mais en dehors de la Surface Rép.)
     # INVERSÉ : Haute est maintenant près du fond de son propre camp (ancienne Basse)
-    if 0 <= x < 36:
+    elif 0 <= x < 36:
         return 'Haute'
-    # 2. Médiane
+    # 3. Médiane
     elif 36 <= x <= 90:
         return 'Médiane'
-    # 3. Basse (fond de son propre camp)
+    # 4. Basse (fond de son propre camp)
     # INVERSÉ : Basse est maintenant près de la surface adverse (ancienne Haute)
-    elif 90 < x <= 120: # Étendu à 120
+    elif 90 < x <= 102:
         return 'Basse'
     else:
         # Pour les cas limites ou erreurs, on met par défaut dans une zone centrale
@@ -366,7 +312,6 @@ df['Zone_temp'] = df.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1
 zone_options = sorted(df['Zone_temp'].dropna().unique())
 del df['Zone_temp'] # Supprimer la colonne temporaire
 # Filtre par zone dans la sidebar (avant les options de visualisation)
-# Note : La "Surface de Réparation" n'est plus une option
 selected_zones = st.sidebar.multiselect(
     "Zones du Terrain",
     options=zone_options,
@@ -403,8 +348,15 @@ with st.sidebar.expander("➕ Options Avancées"):
     scatter_alpha = st.slider("Opacité des points", min_value=0.1, max_value=1.0, value=0.8, step=0.1, key="scatter_alpha")
     st.markdown("**Heatmap**")
     heatmap_alpha = st.slider("Opacité de la heatmap", min_value=0.1, max_value=1.0, value=0.85, step=0.05, key="heatmap_alpha")
-    # NOUVEAUTÉS : Options avancées pour la heatmap (TYPE DE STATISTIQUE SUPPRIMÉ)
+    # NOUVEAUTÉS : Options avancées pour la heatmap
     st.markdown("**Options Avancées Heatmap**")
+    # Choix du type de statistique
+    heatmap_statistic = st.selectbox(
+        "Type de statistique",
+        options=['count', 'density'],
+        index=0,
+        help="Choisissez le type de statistique pour la heatmap."
+    )
     # Option pour masquer/afficher les labels
     show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True, key="show_heatmap_labels")
     # NOUVEAUTÉ : Option pour masquer les labels 0%
@@ -466,19 +418,19 @@ common_pitch_params = {
     'line_zorder': 2
 }
 fig_size = (8, 5.5) # Taille uniforme et légèrement ajustée
-# Définition des zones pour la visualisation (MODIFIÉE - SANS SURFACE DE RÉPARATION)
+# Définition des zones pour la visualisation
 # INVERSÉ : Les rectangles correspondent à la logique de classification interchangée
 zones_rects = {
     'Haute': (0, 0, 36, 80),      # Ancienne Basse
     'Médiane': (36, 0, 54, 80),   # 90-36=54
-    'Basse': (90, 0, 30, 80),     # Ancienne Haute (120-90=30, ajusté)
-    # 'Surface Rép.' n'est plus définie ici
+    'Basse': (90, 0, 12, 80),     # Ancienne Haute (102-90=12)
+    'Surface Rép.': (102, 18, 18, 44) # 120-102=18, 62-18=44
 }
 zone_colors = {
     'Haute': '#87CEEB',          # Bleu clair
     'Médiane': '#98FB98',        # Vert pâle
     'Basse': '#FFD700',          # Or
-    # 'Surface Rép.': '#FF6347'     # Rouge tomate
+    'Surface Rép.': '#FF6347'     # Rouge tomate
 }
 col_a, col_b = st.columns(2)
 # --- Terrain avec pourcentages ---
@@ -493,7 +445,8 @@ with col_a:
         ax_zone.add_patch(rect)
         # Ajustement de la taille du texte pour une meilleure lisibilité
         # Centrer le texte dans le rectangle
-        ax_zone.text(x + w/2, y + h/2, f"{zone}\n{percent*100:.1f}%", ha='center', va='center', fontsize=8, weight='bold')
+        ax_zone.text(x + w/2, y + h/2, f"{zone}
+{percent*100:.1f}%", ha='center', va='center', fontsize=8, weight='bold')
     ax_zone.set_title("Répartition en Pourcentages", fontsize=12, weight='bold', pad=10) # pad pour l'espacement
     st.pyplot(fig_zone)
 # --- Terrain avec nombre d'événements ---
@@ -508,7 +461,8 @@ with col_b:
         ax_count.add_patch(rect)
         # Ajustement de la taille du texte pour une meilleure lisibilité et cohérence
         # Centrer le texte dans le rectangle
-        ax_count.text(x + w/2, y + h/2, f"{zone}\n{count} evt", ha='center', va='center', fontsize=8, weight='bold')
+        ax_count.text(x + w/2, y + h/2, f"{zone}
+{count} evt", ha='center', va='center', fontsize=8, weight='bold')
     ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10) # pad pour l'espacement
     st.pyplot(fig_count)
 # --- VISUALISATION TERRAIN ---
@@ -585,12 +539,10 @@ with col2:
         fig2.set_facecolor('white')
         df_filtered_hm = df_event if len(displayed_events) != 1 else df_event[df_event['Event'] == displayed_events[0]]
         if not df_filtered_hm.empty:
-            # Suppression de heatmap_statistic, utilisation directe de 'count'
             bin_statistic = pitch.bin_statistic(
-                df_filtered_hm['X'], df_filtered_hm['Y'], statistic='count', bins=(6, 5), normalize=True
+                df_filtered_hm['X'], df_filtered_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True
             )
             pitch.heatmap(bin_statistic, ax=ax2, cmap='Reds', edgecolor='white', alpha=heatmap_alpha)
-            
             # >>>>> SOLUTION RADICALE : Utiliser pitch.label_heatmap <<<<<
             # Remplacer la boucle personnalisée problématique par l'appel standard
             if show_heatmap_labels:
@@ -610,13 +562,11 @@ with col2:
                     pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}', 
                                         fontsize=12, ha='center', va='center', 
                                         color='black')
-                    
                 # Appliquer les effets de contour si nécessaire
                 # Note: label_heatmap ne permet pas directement d'ajouter path_effects.
                 # On peut le faire manuellement après si nécessaire, mais cela complique le code.
                 # Pour simplifier, on laisse comme ça. Si vous voulez les contours, 
                 # il faudra revenir à une boucle personnalisée mais avec une approche différente.
-                
         ax2.set_title("Heatmap des Événements", fontsize=12, weight='bold')
         st.pyplot(fig2)
 st.markdown("---")
@@ -657,7 +607,6 @@ if not df_event.empty:
                 event_cmaps = ['Reds', 'Blues', 'Greens', 'Purples', 'Oranges', 'Greys', 'YlGnBu', 'PuRd']
                 cmap_name = event_cmaps[i % len(event_cmaps)]
                 pitch.heatmap(bin_stat, ax=ax, cmap=cmap_name, edgecolor='white', alpha=heatmap_alpha)
-                
                 # >>>>> SOLUTION RADICALE : Utiliser pitch.label_heatmap <<<<<
                 # Remplacer la boucle personnalisée problématique par l'appel standard
                 if show_heatmap_labels:
@@ -677,11 +626,9 @@ if not df_event.empty:
                         pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}', 
                                             fontsize=10, ha='center', va='center', 
                                             color='black')
-                                            
                 ax.set_title(event_type, color='black', fontsize=12, weight='bold')
                 fig.set_facecolor('white')
                 row[i].pyplot(fig)
-                
                 # Sauvegarder l'image pour le PDF
                 with NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                     fig.savefig(tmpfile.name, bbox_inches='tight', dpi=150)
@@ -695,12 +642,10 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
         # Format A3 paysage (420mm x 297mm) pour plus d'espace
         pdf = FPDF(orientation='L', unit='mm', format='A3')
         pdf.set_auto_page_break(auto=False)
-        
         def add_footer():
             pdf.set_y(-10)
             pdf.set_font("Arial", 'I', 8)
             pdf.cell(0, 5, f"Page {pdf.page_no()}", 0, 0, 'C')
-
         # Préparer toutes les images avant de créer le PDF
         temp_files = []
         try:
@@ -722,19 +667,16 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.set_font("Arial", 'I', 10)
             pdf.cell(0, 10, f"Nombre total d'événements : {len(df_event)}", ln=True, align='C')
             add_footer()
-
             # --- Page 2: Tableaux et terrains zonaux ---
             pdf.add_page()
             pdf.set_font("Arial", 'B', 18)
             pdf.cell(0, 12, "Analyse par Zones du Terrain", ln=True, align='C')
             pdf.ln(8)
-            
             # Tableau quantitatif (partie supérieure gauche)
             pdf.set_xy(20, 30)  # Position fixe pour éviter les chevauchements
             pdf.set_font("Arial", 'B', 12)
             pdf.cell(180, 8, "Événements par Type et Zone", ln=True)
             pdf.ln(3)
-            
             # En-têtes du tableau
             col_names = ['Event'] + [col for col in zone_counts.columns if col != 'Total'] + ['Total']
             col_widths = [35] + [25] * (len(col_names) - 2) + [25]
@@ -742,7 +684,6 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             for i, name in enumerate(col_names):
                 pdf.cell(col_widths[i], 8, str(name), border=1, fill=True, align='C')
             pdf.ln()
-            
             # Données du tableau
             pdf.set_font("Arial", size=10)
             pdf.set_fill_color(255, 255, 255)
@@ -752,13 +693,11 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                     pdf.cell(col_widths[i+1], 8, str(int(row[col])), border=1, align='C')
                 pdf.cell(col_widths[-1], 8, str(int(row['Total'])), border=1, align='C')
                 pdf.ln()
-                
             # Tableau des pourcentages (partie supérieure droite avec position fixe)
             pdf.set_xy(250, 30)  # Position fixe à droite
             pdf.set_font("Arial", 'B', 12)
             pdf.cell(125, 8, "Répartition par Zone (%)", ln=True)
             pdf.ln(3)
-            
             pdf.set_xy(250, 46)  # Position fixe pour les en-têtes
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(220, 220, 220)
@@ -766,7 +705,6 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.cell(35, 8, "Total", border=1, fill=True, align='C')
             pdf.cell(40, 8, "Pourcentage", border=1, fill=True, align='C')
             pdf.ln()
-            
             pdf.set_font("Arial", size=10)
             pdf.set_fill_color(255, 255, 255)
             current_y = 54  # Y fixe pour commencer les données
@@ -776,7 +714,6 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 pdf.cell(35, 8, str(row['Total']), border=1, align='C')
                 pdf.cell(40, 8, f"{row['Pourcentage']:.1f}%", border=1, align='C')
                 current_y += 8
-
             # Sauvegarder les terrains zonaux avec une meilleure résolution
             with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_pct:
                 fig_zone.savefig(tmp_zone_pct.name, bbox_inches='tight', dpi=200, facecolor='white')
@@ -784,12 +721,10 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_count:
                 fig_count.savefig(tmp_zone_count.name, bbox_inches='tight', dpi=200, facecolor='white')
                 temp_files.append(tmp_zone_count.name)
-
             # Placer les terrains dans la partie inférieure (plus grands)
             terrain_y = 140
             pdf.image(tmp_zone_pct.name, x=50, y=terrain_y, w=140, h=90)
             pdf.image(tmp_zone_count.name, x=220, y=terrain_y, w=140, h=90)
-            
             # Légendes sous les terrains
             pdf.set_xy(50, terrain_y + 95)
             pdf.set_font("Arial", 'B', 11)
@@ -797,13 +732,11 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.set_xy(220, terrain_y + 95)
             pdf.cell(140, 6, "Nombre d'Événements", align='C')
             add_footer()
-
             # --- Page 3: Visualisations des terrains ---
             pdf.add_page()
             pdf.set_font("Arial", 'B', 18)
             pdf.cell(0, 12, "Visualisations sur Terrain", ln=True, align='C')
             pdf.ln(10)
-            
             # Sauvegarder les visualisations avec une meilleure résolution
             with NamedTemporaryFile(delete=False, suffix=".png") as tmp_fig1:
                 fig1.savefig(tmp_fig1.name, bbox_inches='tight', dpi=200, facecolor='white')
@@ -811,13 +744,11 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             with NamedTemporaryFile(delete=False, suffix=".png") as tmp_fig2:
                 fig2.savefig(tmp_fig2.name, bbox_inches='tight', dpi=200, facecolor='white')
                 temp_files.append(tmp_fig2.name)
-
             # Placer les visualisations côte à côte avec plus d'espace
             terrain_width = 180
             terrain_height = 120
             pdf.image(tmp_fig1.name, x=30, y=40, w=terrain_width, h=terrain_height)
             pdf.image(tmp_fig2.name, x=230, y=40, w=terrain_width, h=terrain_height)
-            
             # Légendes sous les terrains
             pdf.set_xy(30, 165)
             pdf.set_font("Arial", 'B', 12)
@@ -825,14 +756,12 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.set_xy(230, 165)
             pdf.cell(terrain_width, 8, "Heatmap des événements", align='C')
             add_footer()
-
             # --- Page 4: Cartes combinées ---
             if combined_images:
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
                 pdf.cell(0, 12, "Cartes Combinées par Type d'Événement", ln=True, align='C')
                 pdf.ln(10)
-                
                 # Organiser les images en grille adaptée au format A3
                 img_width = 120
                 img_height = 80
@@ -841,7 +770,6 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 cols = 3
                 spacing_x = 15
                 spacing_y = 20
-                
                 for i, (event_type, img_path) in enumerate(combined_images):
                     if i >= 6:  # Limite à 6 images par page (2 lignes de 3)
                         break
@@ -850,13 +778,11 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                     x = margin_x + col * (img_width + spacing_x)
                     y = margin_y + row * (img_height + spacing_y)
                     pdf.image(img_path, x=x, y=y, w=img_width, h=img_height)
-                    
                     # Titre sous l'image
                     pdf.set_xy(x, y + img_height + 3)
                     pdf.set_font("Arial", 'B', 11)
                     pdf.cell(img_width, 6, event_type, align='C')
                 add_footer()
-
             # Générer et télécharger le PDF
             with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
                 pdf.output(tmp_pdf.name)
