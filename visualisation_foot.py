@@ -165,8 +165,8 @@ def login_page():
                 if authorized_users:
                     st.write("Utilisateurs autorisés :")
                     # Afficher dans un textarea pour faciliter la copie
-                    st.text_area("Liste des ID", value="
-".join(authorized_users), height=150, key="admin_user_list")
+                    # CORRECTION DE LA SYNTAXE ICI
+                    st.text_area("Liste des ID", value="\n".join(authorized_users), height=150, key="admin_user_list")
                 else:
                     st.info("Aucun utilisateur autorisé pour le moment.")
             user_id_to_remove = st.text_input("Retirer un ID utilisateur")
@@ -445,8 +445,7 @@ with col_a:
         ax_zone.add_patch(rect)
         # Ajustement de la taille du texte pour une meilleure lisibilité
         # Centrer le texte dans le rectangle
-        ax_zone.text(x + w/2, y + h/2, f"{zone}
-{percent*100:.1f}%", ha='center', va='center', fontsize=8, weight='bold')
+        ax_zone.text(x + w/2, y + h/2, f"{zone}\n{percent*100:.1f}%", ha='center', va='center', fontsize=8, weight='bold')
     ax_zone.set_title("Répartition en Pourcentages", fontsize=12, weight='bold', pad=10) # pad pour l'espacement
     st.pyplot(fig_zone)
 # --- Terrain avec nombre d'événements ---
@@ -461,8 +460,7 @@ with col_b:
         ax_count.add_patch(rect)
         # Ajustement de la taille du texte pour une meilleure lisibilité et cohérence
         # Centrer le texte dans le rectangle
-        ax_count.text(x + w/2, y + h/2, f"{zone}
-{count} evt", ha='center', va='center', fontsize=8, weight='bold')
+        ax_count.text(x + w/2, y + h/2, f"{zone}\n{count} evt", ha='center', va='center', fontsize=8, weight='bold')
     ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10) # pad pour l'espacement
     st.pyplot(fig_count)
 # --- VISUALISATION TERRAIN ---
