@@ -23,11 +23,11 @@ import base64
 # Chemins vers les fichiers "base de données" simulée
 USER_DB_FILE = "registered_users.json" # Stocke les identifiants et mots de passe hashés
 AUTHORIZED_USERS_FILE = "authorized_users.json" # Stocke les identifiants autorisés
-# --- MODIFICATION ICI ---
+# --- MODIFICATION 1 : Mot de passe admin codé en dur ---
 # Changement de la valeur par défaut du mot de passe admin
 # ATTENTION : Ce mot de passe est visible dans le code source. A utiliser UNIQUEMENT pour des tests locaux.
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "MonSuperMotDePasseAdmin123!") # Mot de passe admin codé en dur pour test local
-# --- FIN DE LA MODIFICATION ---
+# --- FIN DE LA MODIFICATION 1 ---
 def hash_password(password):
     """Hash un mot de passe avec SHA-256."""
     return hashlib.sha256(password.encode()).hexdigest()
@@ -142,52 +142,76 @@ def login_page():
                         st.error("Identifiant ou mot de passe incorrect.")
             else:
                 st.error("Veuillez entrer un identifiant et un mot de passe.")
+    # --- MODIFICATION 2 : Section Admin modifiée ---
     # --- Section Admin (pour vous) ---
     st.markdown("---")
     with st.expander("🛠️ Panneau d'Administration (Pour vous)"):
         admin_password = st.text_input("Mot de passe administrateur", type="password")
         if admin_password == ADMIN_PASSWORD:
             st.success("Accès administrateur")
-            user_id_to_add = st.text_input("Ajouter un ID utilisateur (après paiement)")
-            if st.button("Autoriser l'Utilisateur"):
-                if user_id_to_add:
-                    registered_users = load_registered_users()
-                    if user_id_to_add in registered_users:
+            
+            # --- NOUVEAU : Deux onglets pour deux actions ---
+            admin_tab1, admin_tab2 = st.tabs(["➕ Autoriser un Utilisateur", "🗑️ Retirer un Utilisateur"])
+            
+            with admin_tab1:
+                st.markdown("**Ajouter un utilisateur à la liste des autorisés.**")
+                st.info("ℹ️ L'utilisateur peut ne pas encore exister dans la base d'inscription. Il pourra s'inscrire plus tard.")
+                user_id_to_add = st.text_input("Identifiant de l'utilisateur à autoriser", key="admin_add_user")
+                
+                if st.button("Autoriser l'Utilisateur"):
+                    if user_id_to_add:
+                        registered_users = load_registered_users()
                         authorized_users = load_authorized_users()
-                        authorized_users.add(user_id_to_add)
-                        save_authorized_users(authorized_users)
-                        st.success(f"Utilisateur `{user_id_to_add}` autorisé avec succès !")
+                        
+                        # --- LOGIQUE MODIFIEE ---
+                        # On vérifie s'il est déjà autorisé
+                        if user_id_to_add in authorized_users:
+                             st.warning(f"L'utilisateur `{user_id_to_add}` est déjà autorisé.")
+                        else:
+                            # On l'ajoute directement à la liste des autorisés
+                            # Ancienne logique : if user_id_to_add in registered_users:
+                            authorized_users.add(user_id_to_add)
+                            save_authorized_users(authorized_users)
+                            st.success(f"Utilisateur `{user_id_to_add}` **autorisé avec succès** !")
+                            if user_id_to_add not in registered_users:
+                                st.info(f"ℹ️ L'utilisateur `{user_id_to_add}` n'existe pas encore dans la base d'inscription. Il pourra s'inscrire plus tard avec cet identifiant.")
                     else:
-                        st.warning("Cet identifiant n'existe pas dans la base des utilisateurs enregistrés.")
-                else:
-                    st.warning("Veuillez entrer un identifiant.")
-            if st.button("Voir la liste des utilisateurs autorisés"):
+                        st.warning("Veuillez entrer un identifiant.")
+            
+            with admin_tab2:
+                st.markdown("**Retirer un utilisateur de la liste des autorisés.**")
+                user_id_to_remove = st.text_input("Identifiant de l'utilisateur à retirer", key="admin_remove_user")
+                if st.button("Retirer l'Utilisateur"):
+                    if user_id_to_remove:
+                        authorized_users = load_authorized_users()
+                        if user_id_to_remove in authorized_users:
+                            authorized_users.remove(user_id_to_remove)
+                            save_authorized_users(authorized_users)
+                            st.success(f"Utilisateur `{user_id_to_remove}` retiré avec succès.")
+                            # Si l'utilisateur retiré est l'utilisateur actuel, le déconnecter
+                            if 'username' in st.session_state and st.session_state['username'] == user_id_to_remove:
+                                st.session_state['logged_in'] = False
+                                if 'username' in st.session_state: del st.session_state['username']
+                                st.info("Votre accès a été révoqué. Vous avez été déconnecté.")
+                        else:
+                            st.warning("ID utilisateur non trouvé dans la liste des autorisés.")
+                    else:
+                        st.warning("Veuillez entrer un ID utilisateur.")
+            
+            # --- Affichage de la liste des utilisateurs autorisés ---
+            if st.button("👀 Voir la liste des utilisateurs autorisés"):
                 authorized_users = load_authorized_users()
                 if authorized_users:
                     st.write("Utilisateurs autorisés :")
                     # Afficher dans un textarea pour faciliter la copie
-                    st.text_area("Liste des ID", value="\n".join(authorized_users), height=150, key="admin_user_list")
+                    st.text_area("Liste des ID", value="
+".join(sorted(authorized_users)), height=150, key="admin_user_list")
                 else:
                     st.info("Aucun utilisateur autorisé pour le moment.")
-            user_id_to_remove = st.text_input("Retirer un ID utilisateur")
-            if st.button("Retirer l'Utilisateur"):
-                if user_id_to_remove:
-                    authorized_users = load_authorized_users()
-                    if user_id_to_remove in authorized_users:
-                        authorized_users.remove(user_id_to_remove)
-                        save_authorized_users(authorized_users)
-                        st.success(f"Utilisateur `{user_id_to_remove}` retiré avec succès.")
-                        # Si l'utilisateur retiré est l'utilisateur actuel, le déconnecter
-                        if 'username' in st.session_state and st.session_state['username'] == user_id_to_remove:
-                            st.session_state['logged_in'] = False
-                            if 'username' in st.session_state: del st.session_state['username']
-                            st.info("Votre accès a été révoqué. Vous avez été déconnecté.")
-                    else:
-                        st.warning("ID utilisateur non trouvé.")
-                else:
-                    st.warning("Veuillez entrer un ID utilisateur.")
+
         elif admin_password:
             st.error("Mot de passe administrateur incorrect.")
+    # --- FIN DE LA MODIFICATION 2 ---
 # --- VÉRIFICATION D'ACCÈS AU DÉBUT DU SCRIPT (NOUVEAU) ---
 # Vérifier si l'utilisateur est autorisé au début de l'exécution
 if not is_user_authorized():
@@ -445,7 +469,8 @@ with col_a:
         ax_zone.add_patch(rect)
         # Ajustement de la taille du texte pour une meilleure lisibilité
         # Centrer le texte dans le rectangle
-        ax_zone.text(x + w/2, y + h/2, f"{zone}\n{percent*100:.1f}%", ha='center', va='center', fontsize=8, weight='bold')
+        ax_zone.text(x + w/2, y + h/2, f"{zone}
+{percent*100:.1f}%", ha='center', va='center', fontsize=8, weight='bold')
     ax_zone.set_title("Répartition en Pourcentages", fontsize=12, weight='bold', pad=10) # pad pour l'espacement
     st.pyplot(fig_zone)
 # --- Terrain avec nombre d'événements ---
@@ -460,7 +485,8 @@ with col_b:
         ax_count.add_patch(rect)
         # Ajustement de la taille du texte pour une meilleure lisibilité et cohérence
         # Centrer le texte dans le rectangle
-        ax_count.text(x + w/2, y + h/2, f"{zone}\n{count} evt", ha='center', va='center', fontsize=8, weight='bold')
+        ax_count.text(x + w/2, y + h/2, f"{zone}
+{count} evt", ha='center', va='center', fontsize=8, weight='bold')
     ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10) # pad pour l'espacement
     st.pyplot(fig_count)
 # --- VISUALISATION TERRAIN ---
@@ -551,19 +577,19 @@ with col2:
                     labels = bin_statistic['statistic']
                     labels = np.where(labels == 0, np.nan, labels)
                     # Passer le masque à label_heatmap
-                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}',
-                                        fontsize=12, ha='center', va='center',
+                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}', 
+                                        fontsize=12, ha='center', va='center', 
                                         exclude_zeros=True, # Cette option masque les 0 et les NaN
                                         color='black')
                 else:
                     # Afficher tous les labels
-                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}',
-                                        fontsize=12, ha='center', va='center',
+                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}', 
+                                        fontsize=12, ha='center', va='center', 
                                         color='black')
                 # Appliquer les effets de contour si nécessaire
                 # Note: label_heatmap ne permet pas directement d'ajouter path_effects.
                 # On peut le faire manuellement après si nécessaire, mais cela complique le code.
-                # Pour simplifier, on laisse comme ça. Si vous voulez les contours,
+                # Pour simplifier, on laisse comme ça. Si vous voulez les contours, 
                 # il faudra revenir à une boucle personnalisée mais avec une approche différente.
         ax2.set_title("Heatmap des Événements", fontsize=12, weight='bold')
         st.pyplot(fig2)
@@ -615,14 +641,14 @@ if not df_event.empty:
                         labels = bin_stat['statistic']
                         labels = np.where(labels == 0, np.nan, labels)
                         # Passer le masque à label_heatmap
-                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}',
-                                            fontsize=10, ha='center', va='center',
+                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}', 
+                                            fontsize=10, ha='center', va='center', 
                                             exclude_zeros=True, # Cette option masque les 0 et les NaN
                                             color='black')
                     else:
                         # Afficher tous les labels
-                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}',
-                                            fontsize=10, ha='center', va='center',
+                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}', 
+                                            fontsize=10, ha='center', va='center', 
                                             color='black')
                 ax.set_title(event_type, color='black', fontsize=12, weight='bold')
                 fig.set_facecolor('white')
