@@ -25,7 +25,8 @@ USER_DB_FILE = "registered_users.json" # Stocke les identifiants et mots de pass
 AUTHORIZED_USERS_FILE = "authorized_users.json" # Stocke les identifiants autorisés
 # --- MODIFICATION ICI ---
 # Changement de la valeur par défaut du mot de passe admin
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "votre_mot_de_passe_ici") # Changez-le dans les secrets de déploiement
+# ATTENTION : Ce mot de passe est visible dans le code source. A utiliser UNIQUEMENT pour des tests locaux.
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "MonSuperMotDePasseAdmin123!") # Mot de passe admin codé en dur pour test local
 # --- FIN DE LA MODIFICATION ---
 def hash_password(password):
     """Hash un mot de passe avec SHA-256."""
@@ -165,7 +166,6 @@ def login_page():
                 if authorized_users:
                     st.write("Utilisateurs autorisés :")
                     # Afficher dans un textarea pour faciliter la copie
-                    # CORRECTION DE LA SYNTAXE ICI
                     st.text_area("Liste des ID", value="\n".join(authorized_users), height=150, key="admin_user_list")
                 else:
                     st.info("Aucun utilisateur autorisé pour le moment.")
@@ -551,19 +551,19 @@ with col2:
                     labels = bin_statistic['statistic']
                     labels = np.where(labels == 0, np.nan, labels)
                     # Passer le masque à label_heatmap
-                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}', 
-                                        fontsize=12, ha='center', va='center', 
+                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}',
+                                        fontsize=12, ha='center', va='center',
                                         exclude_zeros=True, # Cette option masque les 0 et les NaN
                                         color='black')
                 else:
                     # Afficher tous les labels
-                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}', 
-                                        fontsize=12, ha='center', va='center', 
+                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}',
+                                        fontsize=12, ha='center', va='center',
                                         color='black')
                 # Appliquer les effets de contour si nécessaire
                 # Note: label_heatmap ne permet pas directement d'ajouter path_effects.
                 # On peut le faire manuellement après si nécessaire, mais cela complique le code.
-                # Pour simplifier, on laisse comme ça. Si vous voulez les contours, 
+                # Pour simplifier, on laisse comme ça. Si vous voulez les contours,
                 # il faudra revenir à une boucle personnalisée mais avec une approche différente.
         ax2.set_title("Heatmap des Événements", fontsize=12, weight='bold')
         st.pyplot(fig2)
@@ -615,14 +615,14 @@ if not df_event.empty:
                         labels = bin_stat['statistic']
                         labels = np.where(labels == 0, np.nan, labels)
                         # Passer le masque à label_heatmap
-                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}', 
-                                            fontsize=10, ha='center', va='center', 
+                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}',
+                                            fontsize=10, ha='center', va='center',
                                             exclude_zeros=True, # Cette option masque les 0 et les NaN
                                             color='black')
                     else:
                         # Afficher tous les labels
-                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}', 
-                                            fontsize=10, ha='center', va='center', 
+                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}',
+                                            fontsize=10, ha='center', va='center',
                                             color='black')
                 ax.set_title(event_type, color='black', fontsize=12, weight='bold')
                 fig.set_facecolor('white')
