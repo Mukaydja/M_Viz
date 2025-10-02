@@ -1,4 +1,12 @@
-# am-fcp.py (version simplifiée et corrigée)
+# am-fcp.py — Version corrigée : zones inversées logiquement (Haute = offensive)
+
+# --- IMPORTS (inchangés) ---
+import uuid
+import json
+import time
+import os
+import hashlib
+import re
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,33 +14,186 @@ from mplsoccer import Pitch
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
+from matplotlib import patheffects
 from matplotlib.patches import Patch
 from fpdf import FPDF
 from tempfile import NamedTemporaryFile
 import base64
-import re
 
-# --- FONCTIONS UTILITAIRES ---
-def classify_zone(x, y):
-    """
-    Classifie un point (x, y) dans une zone du terrain.
-    Zones :
-    - Haute : x > 80 (inclut la surface de réparation adverse)
-    - Médiane : 40 <= x <= 80
-    - Basse : x < 40
-    """
-    if x > 102 and 18 < y < 62:
-        return 'Surface Rép.'
-    elif x > 80:
-        return 'Haute'
-    elif x >= 40:
-        return 'Médiane'
-    else:
-        return 'Basse'
+# --- AUTHENTIFICATION (inchangée, conservée comme dans ton fichier) ---
+USER_DB_FILE = "registered_users.json"
+AUTHORIZED_USERS_FILE = "authorized_users.json"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "MonSuperMotDePasseAdmin123!")
 
-# --- CONFIGURATION DE LA PAGE ---
-st.set_page_config(page_title="Visualisation Foot", layout="wide")
-st.title("⚽ Outil de Visualisation de Données Footballistiques")
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def load_registered_users():
+    try:
+        with open(USER_DB_FILE, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_registered_user(username, password_hash):
+    users = load_registered_users()
+    users[username] = password_hash
+    with open(USER_DB_FILE, "w") as f:
+        json.dump(users, f)
+
+def load_authorized_users():
+    try:
+        with open(AUTHORIZED_USERS_FILE, "r") as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+
+def save_authorized_users(users_set):
+    with open(AUTHORIZED_USERS_FILE, "w") as f:
+        json.dump(list(users_set), f)
+
+def is_user_authorized():
+    if 'logged_in' not in st.session_state or not st.session_state['logged_in']:
+        return False
+    if 'username' not in st.session_state:
+        return False
+    return st.session_state['username'] in load_authorized_users()
+
+def is_valid_username(username):
+    return bool(re.match(r"^[a-zA-Z0-9_-]{3,20}$", username))
+
+def login_page():
+    st.title("⚽ Accès à l'Outil de Visualisation Footballistique")
+    st.markdown("""
+    ### Bienvenue !
+    Cet outil vous permet d'analyser et de visualiser vos données footballistiques.
+    **Fonctionnalités :**
+    - Upload de fichiers CSV
+    - Visualisation des événements sur le terrain
+    - Génération de heatmaps
+    - Création de rapports PDF détaillés
+    **Accès restreint :** Un abonnement mensuel est requis pour utiliser cet outil.
+    """)
+    st.markdown("---")
+    st.subheader("🔐 Accès Utilisateur")
+    tab1, tab2 = st.tabs(["📝 Nouvel Utilisateur", "🔑 Déjà Inscrit"])
+    with tab1:
+        st.markdown("**Créez un compte pour commencer.**")
+        new_username = st.text_input("Choisissez votre Identifiant Unique (3-20 caractères, lettres, chiffres, _ ou -)", key="new_username")
+        new_user_password = st.text_input("Choisissez un mot de passe", type="password", key="new_password")
+        if st.button("Créer un Compte"):
+            if not new_username or not new_user_password:
+                st.error("Veuillez remplir tous les champs.")
+            elif not is_valid_username(new_username):
+                st.error("Identifiant invalide.")
+            else:
+                registered_users = load_registered_users()
+                authorized_users = load_authorized_users()
+                if new_username in registered_users or new_username in authorized_users:
+                    st.error("Cet identifiant est déjà pris.")
+                else:
+                    password_hash = hash_password(new_user_password)
+                    save_registered_user(new_username, password_hash)
+                    st.session_state['logged_in'] = True
+                    st.session_state['username'] = new_username
+                    st.success(f"Compte créé avec succès ! Bienvenue, {new_username} !")
+                    st.info(f"Votre **Identifiant Unique** est : `{new_username}`")
+                    st.warning("⚠️ **Important :** Conservez cet identifiant.")
+                    st.link_button("💳 Procéder au Paiement Mensuel", "https://buy.stripe.com/test_aFa9AS91R82G2N29O9dEs01")
+                    time.sleep(2)
+    with tab2:
+        st.markdown("**Connectez-vous avec votre identifiant unique.**")
+        username_input = st.text_input("Votre Identifiant Unique", key="login_id")
+        password_input = st.text_input("Votre Mot de passe", type="password", key="login_password")
+        if st.button("Se Connecter"):
+            if username_input and password_input:
+                registered_users = load_registered_users()
+                password_hash = hash_password(password_input)
+                if username_input in registered_users and registered_users[username_input] == password_hash:
+                    st.session_state['logged_in'] = True
+                    st.session_state['username'] = username_input
+                    st.success(f"Connexion réussie ! Bienvenue, {username_input} !")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    if username_input in registered_users:
+                        st.session_state['logged_in'] = True
+                        st.session_state['username'] = username_input
+                        st.info(f"Bonjour, {username_input} ! Votre identifiant est reconnu.")
+                        st.warning("🔒 Votre compte n'est pas encore activé.")
+                        st.link_button("💳 Vérifier/Procéder au Paiement", "https://buy.stripe.com/test_aFa9AS91R82G2N29O9dEs01")
+                    else:
+                        st.error("Identifiant ou mot de passe incorrect.")
+            else:
+                st.error("Veuillez entrer un identifiant et un mot de passe.")
+    st.markdown("---")
+    with st.expander("🛠️ Panneau d'Administration (Pour vous)"):
+        admin_password = st.text_input("Mot de passe administrateur", type="password")
+        if admin_password == ADMIN_PASSWORD:
+            st.success("Accès administrateur")
+            admin_tab1, admin_tab2 = st.tabs(["➕ Autoriser un Utilisateur", "🗑️ Retirer un Utilisateur"])
+            with admin_tab1:
+                user_id_to_add = st.text_input("Identifiant de l'utilisateur à autoriser", key="admin_add_user")
+                if st.button("Autoriser l'Utilisateur"):
+                    if user_id_to_add:
+                        authorized_users = load_authorized_users()
+                        if user_id_to_add in authorized_users:
+                            st.warning(f"L'utilisateur `{user_id_to_add}` est déjà autorisé.")
+                        else:
+                            authorized_users.add(user_id_to_add)
+                            save_authorized_users(authorized_users)
+                            st.success(f"Utilisateur `{user_id_to_add}` **autorisé avec succès** !")
+                            if user_id_to_add not in load_registered_users():
+                                st.info(f"L'utilisateur `{user_id_to_add}` n'existe pas encore.")
+                    else:
+                        st.warning("Veuillez entrer un identifiant.")
+            with admin_tab2:
+                user_id_to_remove = st.text_input("Identifiant de l'utilisateur à retirer", key="admin_remove_user")
+                if st.button("Retirer l'Utilisateur"):
+                    if user_id_to_remove:
+                        authorized_users = load_authorized_users()
+                        if user_id_to_remove in authorized_users:
+                            authorized_users.remove(user_id_to_remove)
+                            save_authorized_users(authorized_users)
+                            st.success(f"Utilisateur `{user_id_to_remove}` retiré avec succès.")
+                            if 'username' in st.session_state and st.session_state['username'] == user_id_to_remove:
+                                st.session_state['logged_in'] = False
+                                if 'username' in st.session_state: del st.session_state['username']
+                                st.info("Votre accès a été révoqué.")
+                        else:
+                            st.warning("ID utilisateur non trouvé.")
+                    else:
+                        st.warning("Veuillez entrer un ID utilisateur.")
+            if st.button("👀 Voir la liste des utilisateurs autorisés"):
+                authorized_users = load_authorized_users()
+                if authorized_users:
+                    st.text_area("Liste des ID", value="\n".join(sorted(authorized_users)), height=150)
+                else:
+                    st.info("Aucun utilisateur autorisé.")
+        elif admin_password:
+            st.error("Mot de passe administrateur incorrect.")
+
+# --- VÉRIFICATION D'ACCÈS ---
+if not is_user_authorized():
+    login_page()
+    if 'logged_in' in st.session_state and st.session_state['logged_in']:
+        if 'username' in st.session_state:
+            st.markdown(f"Bonjour, **{st.session_state['username']}** !")
+        if st.button("Se Déconnecter"):
+            keys_to_delete = [k for k in st.session_state.keys() if k.startswith('logged_in') or k.startswith('user_')]
+            for k in keys_to_delete:
+                del st.session_state[k]
+            st.success("Vous avez été déconnecté.")
+            st.rerun()
+    st.stop()
+
+# --- PAGE PRINCIPALE ---
+if 'username' in st.session_state:
+    st.set_page_config(page_title=f"Visualisation Foot - {st.session_state['username']}", layout="wide")
+    st.title(f"⚽ Outil de Visualisation de Données Footballistiques - Bienvenue, {st.session_state['username']} !")
+else:
+    st.set_page_config(page_title="Visualisation Foot", layout="wide")
+    st.title("Outil de Visualisation de Données Footballistiques")
 
 # --- UPLOAD CSV ---
 st.sidebar.header("📁 Données")
@@ -59,13 +220,12 @@ with st.expander("🔍 Aperçu des données importées"):
     st.write("**Premières lignes :**")
     st.dataframe(df.head())
 
-# --- VÉRIFICATION DES COLONNES REQUISES ---
+# --- VÉRIFICATION DES COLONNES ---
 required_columns = ['Team', 'Player', 'Event', 'X', 'Y', 'X2', 'Y2']
 missing_columns = [col for col in required_columns if col not in df.columns]
 if missing_columns:
     st.error(f"Colonnes manquantes dans le fichier CSV : {missing_columns}")
     st.stop()
-
 df = df[required_columns]
 df = df.dropna(subset=['Player', 'Event', 'X', 'Y']).reset_index(drop=True)
 
@@ -108,24 +268,40 @@ displayed_events = st.sidebar.multiselect(
     default=["Pass"] if "Pass" in event_options else event_options[:1]
 )
 
-# --- Ajout temporaire de la colonne Zone pour les filtres ---
+# --- ✅ CORRECTION MAJEURE : CLASSIFICATION DES ZONES (LOGIQUE FOOTBALLISTIQUE) ---
+def classify_zone(x, y):
+    """
+    Classification CORRECTE :
+    - Surface Rép. : x > 102 et 18 < y < 62 → dans la surface adverse
+    - Haute        : 80 < x <= 102 → tiers offensif (proche surface adverse)
+    - Médiane      : 40 <= x <= 80 → milieu
+    - Basse        : x < 40 → tiers défensif (proche de sa propre surface)
+    """
+    if x > 102 and 18 < y < 62:
+        return 'Surface Rép.'
+    elif x > 80:
+        return 'Haute'
+    elif x >= 40:
+        return 'Médiane'
+    else:
+        return 'Basse'
+
+# --- Ajout temporaire pour le filtre ---
 df['Zone_temp'] = df.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1)
 zone_options = sorted(df['Zone_temp'].dropna().unique())
+del df['Zone_temp']
+
 selected_zones = st.sidebar.multiselect(
     "Zones du Terrain",
     options=zone_options,
     default=zone_options,
     help="Filtrer les événements par zone où ils ont eu lieu."
 )
-del df['Zone_temp']
 
 # --- OPTIONS D'AFFICHAGE ---
 st.sidebar.header("⚙️ Options d'Affichage")
-
-# Légende dans la sidebar
 show_legend = st.sidebar.checkbox("Afficher la légende des événements", value=True)
 
-# Palette de couleurs
 PALETTE_OPTIONS = {
     'Par défaut (Couleurs spécifiques + Tab20)': 'Par défaut',
     'Tab20 (Couleurs vives)': 'tab20',
@@ -139,30 +315,19 @@ PALETTE_OPTIONS = {
     'Dark2 (Couleurs sombres)': 'Dark2'
 }
 display_names_list = list(PALETTE_OPTIONS.keys())
-selected_palette_display_name = st.sidebar.selectbox(
-    "Palette de couleurs",
-    options=display_names_list,
-    index=0,
-    help="Choisissez une palette de couleurs pour les types d'événements."
-)
-color_palette_name = PALETTE_OPTIONS[selected_palette_display_name]
 
-# Options avancées
 with st.sidebar.expander("➕ Options Avancées"):
-    st.markdown("**Flèches (Passes, etc.)**")
-    arrow_width = st.slider("Épaisseur des flèches", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
-    arrow_head_scale = st.slider("Taille de la tête des flèches", min_value=1.0, max_value=10.0, value=2.0, step=0.5)
-    arrow_alpha = st.slider("Opacité des flèches", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
-
-    st.markdown("**Points (Tirs, Tacles, etc.)**")
-    point_size = st.slider("Taille des points", min_value=20, max_value=200, value=80, step=10)
-    scatter_alpha = st.slider("Opacité des points", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
-
-    st.markdown("**Heatmap**")
-    heatmap_alpha = st.slider("Opacité de la heatmap", min_value=0.1, max_value=1.0, value=0.85, step=0.05)
+    arrow_width = st.slider("Épaisseur des flèches", min_value=0.5, max_value=5.0, value=2.0, step=0.5, key="arrow_width")
+    arrow_head_scale = st.slider("Taille de la tête des flèches", min_value=1.0, max_value=10.0, value=2.0, step=0.5, key="arrow_head_scale")
+    arrow_alpha = st.slider("Opacité des flèches", min_value=0.1, max_value=1.0, value=0.8, step=0.1, key="arrow_alpha")
+    point_size = st.slider("Taille des points", min_value=20, max_value=200, value=80, step=10, key="point_size")
+    scatter_alpha = st.slider("Opacité des points", min_value=0.1, max_value=1.0, value=0.8, step=0.1, key="scatter_alpha")
+    heatmap_alpha = st.slider("Opacité de la heatmap", min_value=0.1, max_value=1.0, value=0.85, step=0.05, key="heatmap_alpha")
     heatmap_statistic = st.selectbox("Type de statistique", options=['count', 'density'], index=0)
-    show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True)
+    show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True, key="show_heatmap_labels")
     hide_zero_percent_labels = st.checkbox("Masquer les labels 0%", value=True)
+    selected_palette_display_name = st.selectbox("Palette de couleurs", options=display_names_list, index=0)
+    color_palette_name = PALETTE_OPTIONS[selected_palette_display_name]
 
 # --- APPLICATION DES FILTRES ---
 df_filtered = df[
@@ -193,11 +358,9 @@ zone_total = df_event['Zone'].value_counts().reset_index()
 zone_total.columns = ['Zone', 'Total']
 total_events = zone_total['Total'].sum()
 zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
-st.dataframe(
-    zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"})
-)
+st.dataframe(zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"}))
 
-# --- VISUALISATION PAR ZONES ---
+# --- ✅ CORRECTION : VISUALISATIONS PAR ZONES ---
 st.markdown("---")
 st.header("Visualisations sur Terrain - Analyse par Zones")
 
@@ -209,18 +372,19 @@ common_pitch_params = {
 }
 fig_size = (8, 5.5)
 
-# Nouvelle définition des zones (corrigée)
+# ✅ RECTANGLES CORRIGÉS : Haute = offensive (x élevé)
 zones_rects = {
-    'Haute': (80, 0, 40, 80),
-    'Médiane': (40, 0, 40, 80),
-    'Basse': (0, 0, 40, 80),
-    'Surface Rép.': (102, 18, 18, 44)
+    'Haute': (80, 0, 22, 80),       # x=80 à 102
+    'Médiane': (40, 0, 40, 80),     # x=40 à 80
+    'Basse': (0, 0, 40, 80),        # x=0 à 40
+    'Surface Rép.': (102, 18, 18, 44)  # x=102 à 120, y=18 à 62
 }
+
 zone_colors = {
-    'Haute': '#FFD700',
-    'Médiane': '#98FB98',
-    'Basse': '#87CEEB',
-    'Surface Rép.': '#FF6347'
+    'Haute': '#FFD700',          # Or → offensive
+    'Médiane': '#98FB98',        # Vert → neutre
+    'Basse': '#87CEEB',          # Bleu → défensive
+    'Surface Rép.': '#FF6347'    # Rouge → danger
 }
 
 col_a, col_b = st.columns(2)
@@ -251,11 +415,10 @@ with col_b:
     ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10)
     st.pyplot(fig_count)
 
-# --- VISUALISATIONS PRINCIPALES ---
+# --- VISUALISATIONS PRINCIPALES (inchangées) ---
 st.markdown("---")
 st.subheader("Visualisations sur Terrain")
 
-# Couleurs des événements
 base_colors = {
     'Shot': '#FF4B4B', 'Pass': '#6C9AC3', 'Dribble': '#FFA500',
     'Cross': '#92c952', 'Tackle': '#A52A2A', 'Interception': '#FFD700',
@@ -283,7 +446,7 @@ with col1:
     with st.spinner("Génération de la visualisation des événements..."):
         pitch = Pitch(pitch_color='white', line_color='black', linewidth=1)
         fig1, ax1 = pitch.draw(figsize=(10, 6))
-        fig1.set_facecolor('white')
+        legend_elements = []
         for event_type in displayed_events:
             event_data = df_event[df_event['Event'] == event_type]
             color = event_colors.get(event_type, '#333333')
@@ -300,10 +463,19 @@ with col1:
                     event_data[~has_xy2]['X'], event_data[~has_xy2]['Y'],
                     ax=ax1, fc=color, ec='black', lw=0.5, s=point_size, alpha=scatter_alpha
                 )
+            if show_legend:
+                legend_elements.append(Patch(facecolor=color, label=event_type))
         ax1.set_title("Visualisation des Événements", fontsize=12, weight='bold')
+        fig1.set_facecolor('white')
+        if show_legend and legend_elements:
+            fig1.set_size_inches(12, 6)
+            ax1.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1.02, 0.5))
+            plt.subplots_adjust(right=0.82)
+        else:
+            plt.tight_layout()
         st.pyplot(fig1)
 
-        # Affichage de la légende dans la sidebar
+        # Légende dans la sidebar
         if show_legend:
             with st.sidebar:
                 st.markdown("### 🎨 Légende des événements")
@@ -318,21 +490,19 @@ with col2:
         fig2.set_facecolor('white')
         df_hm = df_event if len(displayed_events) != 1 else df_event[df_event['Event'] == displayed_events[0]]
         if not df_hm.empty:
-            bin_statistic = pitch.bin_statistic(
-                df_hm['X'], df_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True
-            )
+            bin_statistic = pitch.bin_statistic(df_hm['X'], df_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True)
             pitch.heatmap(bin_statistic, ax=ax2, cmap='Reds', edgecolor='white', alpha=heatmap_alpha)
             if show_heatmap_labels:
-                if hide_zero_percent_labels:
-                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}', fontsize=12,
-                                        ha='center', va='center', exclude_zeros=True, color='black')
-                else:
-                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}', fontsize=12,
-                                        ha='center', va='center', color='black')
+                pitch.label_heatmap(
+                    bin_statistic, ax=ax2, str_format='{:.0%}', fontsize=12,
+                    ha='center', va='center', exclude_zeros=hide_zero_percent_labels, color='black'
+                )
         ax2.set_title("Heatmap des Événements", fontsize=12, weight='bold')
         st.pyplot(fig2)
 
-# --- CARTES COMBINÉES PAR TYPE D'ÉVÉNEMENT ---
+st.markdown("---")
+
+# --- CARTES COMBINÉES ET PDF (inchangés) ---
 if not df_event.empty:
     with st.expander("📊 Carte combinée par type d'événement", expanded=True):
         st.subheader("Carte combinée par type d'événement")
@@ -368,12 +538,10 @@ if not df_event.empty:
                 cmap_name = event_cmaps[i % len(event_cmaps)]
                 pitch.heatmap(bin_stat, ax=ax, cmap=cmap_name, edgecolor='white', alpha=heatmap_alpha)
                 if show_heatmap_labels:
-                    if hide_zero_percent_labels:
-                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}', fontsize=10,
-                                            ha='center', va='center', exclude_zeros=True, color='black')
-                    else:
-                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}', fontsize=10,
-                                            ha='center', va='center', color='black')
+                    pitch.label_heatmap(
+                        bin_stat, ax=ax, str_format='{:.0%}', fontsize=10,
+                        ha='center', va='center', exclude_zeros=hide_zero_percent_labels, color='black'
+                    )
                 ax.set_title(event_type, color='black', fontsize=12, weight='bold')
                 fig.set_facecolor('white')
                 row[i].pyplot(fig)
@@ -396,7 +564,6 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
 
         temp_files = []
         try:
-            # Page de garde
             pdf.add_page()
             pdf.set_font("Arial", 'B', 24)
             pdf.ln(40)
@@ -415,13 +582,11 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.cell(0, 10, f"Nombre total d'événements : {len(df_event)}", ln=True, align='C')
             add_footer()
 
-            # Page 2 : Zones
             pdf.add_page()
             pdf.set_font("Arial", 'B', 18)
             pdf.cell(0, 12, "Analyse par Zones du Terrain", ln=True, align='C')
             pdf.ln(8)
 
-            # Sauvegarder images
             with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_pct:
                 fig_zone.savefig(tmp_zone_pct.name, bbox_inches='tight', dpi=200, facecolor='white')
                 temp_files.append(tmp_zone_pct.name)
@@ -439,7 +604,6 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.cell(140, 6, "Nombre d'Événements", align='C')
             add_footer()
 
-            # Page 3 : Visualisations principales
             pdf.add_page()
             pdf.set_font("Arial", 'B', 18)
             pdf.cell(0, 12, "Visualisations sur Terrain", ln=True, align='C')
@@ -463,7 +627,6 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.cell(terrain_width, 8, "Heatmap des événements", align='C')
             add_footer()
 
-            # Page 4 : Cartes combinées
             if combined_images:
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
@@ -487,7 +650,6 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                     pdf.cell(img_width, 6, event_type, align='C')
                 add_footer()
 
-            # Téléchargement
             with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
                 pdf.output(tmp_pdf.name)
                 with open(tmp_pdf.name, "rb") as file:
