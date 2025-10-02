@@ -379,17 +379,17 @@ else:
                     plt.close(fig)
 
 # ======================================================================
-# 🆕 VISUALISATION DÉDIÉE — Tirs / Tir cadré / Tir non cadré (exclut le reste)
+# 🎯 VISUALISATION DÉDIÉE — Tirs / Tir cadré / Tir non cadré (exclut le reste)
 # ======================================================================
 st.markdown("---")
 st.header("🎯 Tirs uniquement (Tir / Tir cadré / Tir non cadré)")
 
-# Synonymes FR/EN courants dans les CSV
+# Synonymes FR/EN courants dans les CSV (les Events ont été .str.title() plus haut)
 SHOT_NAMES = {'Shot', 'Tir'}
-ON_TARGET_NAMES = {'Shot On Target', 'On Target', 'Tir Cadre', 'Tir Cadré', 'But', 'Goal'}
-OFF_TARGET_NAMES = {'Shot Off Target', 'Off Target', 'Tir Non Cadre', 'Tir Non Cadré'}
+ON_TARGET_NAMES = {'Shot On Target', 'On Target', 'Tir Cadré', 'Tir Cadre', 'Goal', 'But'}
+OFF_TARGET_NAMES = {'Shot Off Target', 'Off Target', 'Tir Non Cadré', 'Tir Non Cadre'}
 
-# Filtre indépendant des 'displayed_events' : on garde tes filtres équipe/joueur/zone
+# Filtre indépendant de 'displayed_events' : on garde Équipes / Joueurs / Zones
 df_base = df[
     df['Team'].isin(selected_teams) &
     df['Player'].isin(selected_players)
@@ -398,18 +398,18 @@ df_base = df_base[
     df_base.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1).isin(selected_zones)
 ]
 
-# Détermine les lignes de tirs
+# Détermine les lignes de tirs (on accepte "Tir", "Tir cadré", "Goal/But", etc.)
 is_shot_generic = df_base['Event'].isin(SHOT_NAMES)
 is_on_target = df_base['Event'].isin(ON_TARGET_NAMES)
 is_off_target = df_base['Event'].isin(OFF_TARGET_NAMES)
-is_goal = df_base['Event'].isin({'Goal', 'But'})
+is_goal = df_base['Event'].isin({'Goal', 'But'})  # pour l’icône "ballon"
 
 df_shots = df_base[is_shot_generic | is_on_target | is_off_target | is_goal].copy()
 
 if df_shots.empty:
     st.info("Aucun tir trouvé avec les filtres actuels (équipes/joueurs/zones).")
 else:
-    # Crée une colonne TypeTir : 'Cadré', 'Non cadré', 'Tir'
+    # Normalise en trois catégories d'affichage
     def label_shot(e):
         if e in ON_TARGET_NAMES or e in {'Goal', 'But'}:
             return 'Tir cadré'
@@ -421,14 +421,14 @@ else:
 
     df_shots['TypeTir'] = df_shots['Event'].map(label_shot)
 
-    # Compteurs rapides
+    # Compteurs
     c_total = len(df_shots)
     c_on = (df_shots['TypeTir'] == 'Tir cadré').sum()
     c_off = (df_shots['TypeTir'] == 'Tir non cadré').sum()
     c_unk = (df_shots['TypeTir'] == 'Tir').sum()
     st.caption(f"Total tirs: {c_total} • Tir cadré: {c_on} • Tir non cadré: {c_off} • Non précisé: {c_unk}")
 
-    # Pitch vertical demi-terrain (StatsBomb), thème sombre
+    # Demi-terrain vertical, thème sombre
     vpitch = VerticalPitch(pitch_type='statsbomb', pitch_color='#22312b', line_color='#c7d5cc',
                            half=True, pad_top=2)
     fig_shots, axs_shots = vpitch.grid(endnote_height=0.03, endnote_space=0, figheight=12,
@@ -442,8 +442,8 @@ else:
         vpitch.scatter(df_goals['X'], df_goals['Y'], s=700, marker='football',
                        edgecolors='black', c='white', zorder=3, label='But', ax=axs_shots['pitch'])
 
-    # Tir cadré (hors "But")
-    df_on = df_shots[df_shots['TypeTir'] == 'Tir cadré' & ~df_shots['Event'].isin({'Goal', 'But'})] if not df_shots.empty else pd.DataFrame()
+    # Tir cadré (hors "But")  ✅ parenthèses obligatoires avec & / ~
+    df_on = df_shots[(df_shots['TypeTir'] == 'Tir cadré') & (~df_shots['Event'].isin({'Goal', 'But'}))]
     if not df_on.empty:
         vpitch.scatter(df_on['X'], df_on['Y'], s=200, edgecolors='white', c='white', alpha=0.9,
                        zorder=2, label='Tir cadré', ax=axs_shots['pitch'])
@@ -454,7 +454,7 @@ else:
         vpitch.scatter(df_off['X'], df_off['Y'], s=200, edgecolors='white', facecolors='#22312b',
                        zorder=2, label='Tir non cadré', ax=axs_shots['pitch'])
 
-    # Tirs non précisés
+    # Tirs non précisés ("Tir" générique)
     df_unk = df_shots[df_shots['TypeTir'] == 'Tir']
     if not df_unk.empty:
         vpitch.scatter(df_unk['X'], df_unk['Y'], s=120, edgecolors='white', facecolors='#5d6d6a',
@@ -469,6 +469,7 @@ else:
     axs_shots['endnote'].text(1, 0.5, '', va='center', ha='right', fontsize=16, color='#dee6ea')
 
     st.pyplot(fig_shots)
+
 
 # --- TÉLÉCHARGEMENT PDF ---
 st.sidebar.markdown("---")
