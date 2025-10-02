@@ -102,17 +102,17 @@ displayed_events = st.sidebar.multiselect(
     default=["Pass"] if "Pass" in event_options else event_options[:1]
 )
 
-# --- ✅ CORRECTION : CLASSIFICATION EN 3 ZONES (SANS "SURFACE RÉP.") ---
+# --- ✅ CORRECTION : CLASSIFICATION EN 3 ZONES (Haute/Basse inversées) ---
 def classify_zone(x, y):
     """
     Classification en 3 zones :
-    - Haute : x > 80 (zone offensive, inclut la surface adverse)
+    - Haute : x < 40 (désormais zone côté gauche/défensive)
     - Médiane : 40 <= x <= 80
-    - Basse : x < 40 (zone défensive)
+    - Basse : x > 80 (désormais zone côté droit/offensive)
     """
-    if x > 80:
+    if x < 40:
         return 'Haute'
-    elif x >= 40:
+    elif x <= 80:
         return 'Médiane'
     else:
         return 'Basse'
@@ -203,17 +203,17 @@ common_pitch_params = {
 }
 fig_size = (8, 5.5)
 
-# ✅ RECTANGLES CORRIGÉS : 3 zones, Haute = offensive
+# ✅ RECTANGLES CORRIGÉS : 3 zones, Haute/Basse inversées pour correspondre à la classification
 zones_rects = {
-    'Haute': (80, 0, 40, 80),       # x=80 à 120
+    'Haute': (0, 0, 40, 80),        # x=0 à 40   (désormais Haute)
     'Médiane': (40, 0, 40, 80),     # x=40 à 80
-    'Basse': (0, 0, 40, 80)         # x=0 à 40
+    'Basse': (80, 0, 40, 80)        # x=80 à 120 (désormais Basse)
 }
 
 zone_colors = {
-    'Haute': '#FFD700',          # Or → offensive
-    'Médiane': '#98FB98',        # Vert → neutre
-    'Basse': '#87CEEB'           # Bleu → défensive
+    'Haute': '#FFD700',          # Or
+    'Médiane': '#98FB98',        # Vert
+    'Basse': '#87CEEB'           # Bleu
 }
 
 col_a, col_b = st.columns(2)
@@ -225,9 +225,11 @@ with col_a:
     zone_percents = df_event['Zone'].value_counts(normalize=True).to_dict()
     for zone, (x, y, w, h) in zones_rects.items():
         percent = zone_percents.get(zone, 0)
-        rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black', facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
+        rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black',
+                             facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
         ax_zone.add_patch(rect)
-        ax_zone.text(x + w/2, y + h/2, f"{zone}\n{percent*100:.1f}%", ha='center', va='center', fontsize=8, weight='bold')
+        ax_zone.text(x + w/2, y + h/2, f"{zone}\n{percent*100:.1f}%", ha='center', va='center',
+                     fontsize=8, weight='bold')
     ax_zone.set_title("Répartition en Pourcentages", fontsize=12, weight='bold', pad=10)
     st.pyplot(fig_zone)
 
@@ -238,9 +240,11 @@ with col_b:
     zone_counts_dict = df_event['Zone'].value_counts().to_dict()
     for zone, (x, y, w, h) in zones_rects.items():
         count = zone_counts_dict.get(zone, 0)
-        rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black', facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
+        rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black',
+                             facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
         ax_count.add_patch(rect)
-        ax_count.text(x + w/2, y + h/2, f"{zone}\n{count} evt", ha='center', va='center', fontsize=8, weight='bold')
+        ax_count.text(x + w/2, y + h/2, f"{zone}\n{count} evt", ha='center', va='center',
+                      fontsize=8, weight='bold')
     ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10)
     st.pyplot(fig_count)
 
