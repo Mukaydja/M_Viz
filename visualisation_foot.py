@@ -10,7 +10,7 @@ import re
 import streamlit as st
 import pandas as pd
 import numpy as np
-from mplsoccer import Pitch
+from mplsoccer import Pitch, VerticalPitch
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
@@ -160,7 +160,7 @@ with st.sidebar.expander("➕ Options Avancées"):
     selected_palette_display_name = st.selectbox("Palette de couleurs", options=display_names_list, index=0)
     color_palette_name = PALETTE_OPTIONS[selected_palette_display_name]
 
-# --- APPLICATION DES FILTRES ---
+# --- APPLICATION DES FILTRES GÉNÉRAUX ---
 df_filtered = df[
     df['Team'].isin(selected_teams) &
     df['Player'].isin(selected_players) &
@@ -376,6 +376,106 @@ if not df_event.empty:
                     combined_images.append((event_type, tmpfile.name))
                 plt.close(fig)
 
+# ======================================================================
+# 🆕 VISUALISATION DÉDIÉE — Tirs / Tir cadré / Tir non cadré (exclut le reste)
+# ======================================================================
+st.markdown("---")
+st.header("🎯 Tirs uniquement (Tir / Tir cadré / Tir non cadré)")
+
+# Synonymes FR/EN courants dans les CSV
+SHOT_NAMES = {'Shot', 'Tir'}
+ON_TARGET_NAMES = {'Shot On Target', 'On Target', 'Tir Cadre', 'Tir Cadré', 'But', 'Goal'}
+OFF_TARGET_NAMES = {'Shot Off Target', 'Off Target', 'Tir Non Cadre', 'Tir Non Cadré'}
+
+# Filtre indépendant des 'displayed_events' : on garde tes filtres équipe/joueur/zone
+df_base = df[
+    df['Team'].isin(selected_teams) &
+    df['Player'].isin(selected_players)
+]
+df_base = df_base[
+    df_base.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1).isin(selected_zones)
+]
+
+# Détermine les lignes de tirs
+event_series = df_base['Event'].astype(str)
+is_shot_generic = event_series.isin(SHOT_NAMES)
+is_on_target = event_series.isin(ON_TARGET_NAMES)
+is_off_target = event_series.isin(OFF_TARGET_NAMES)
+
+# Cas où le CSV n'a qu'un type "Tir" mais fournit un indicateur via X2/Y2 (optionnel) :
+# (on ne force rien ici; on ne classe que si noms explicites)
+is_goal = event_series.isin({'Goal', 'But'})  # inclus déjà dans ON_TARGET_NAMES
+
+df_shots = df_base[is_shot_generic | is_on_target | is_off_target | is_goal].copy()
+
+if df_shots.empty:
+    st.info("Aucun tir trouvé avec les filtres actuels (équipes/joueurs/zones).")
+else:
+    # Crée une colonne TypeTir : 'Cadré', 'Non cadré', 'Tir'
+    def label_shot(e):
+        if e in ON_TARGET_NAMES:
+            return 'Tir cadré'
+        if e in OFF_TARGET_NAMES:
+            return 'Tir non cadré'
+        if e in SHOT_NAMES:
+            return 'Tir'
+        if e in {'Goal', 'But'}:
+            return 'Tir cadré'
+        return 'Autre'
+
+    df_shots['TypeTir'] = df_shots['Event'].map(label_shot)
+
+    # Compteurs rapides
+    c_total = len(df_shots)
+    c_on = (df_shots['TypeTir'] == 'Tir cadré').sum()
+    c_off = (df_shots['TypeTir'] == 'Tir non cadré').sum()
+    c_unk = (df_shots['TypeTir'] == 'Tir').sum()
+    st.caption(f"Total tirs: {c_total} • Tir cadré: {c_on} • Tir non cadré: {c_off} • Non précisé: {c_unk}")
+
+    # Pitch vertical demi-terrain (StatsBomb), thème sombre
+    vpitch = VerticalPitch(pitch_type='statsbomb', pitch_color='#22312b', line_color='#c7d5cc',
+                           half=True, pad_top=2)
+    fig_shots, axs_shots = vpitch.grid(endnote_height=0.03, endnote_space=0, figheight=12,
+                                       title_height=0.08, title_space=0, axis=False,
+                                       grid_height=0.82)
+    fig_shots.set_facecolor('#22312b')
+
+    # Marqueurs : but (ballon), cadré (plein), non cadré (contour)
+    # Buts (si présents explicitement)
+    df_goals = df_shots[event_series.isin({'Goal', 'But'})]
+    if not df_goals.empty:
+        vpitch.scatter(df_goals['X'], df_goals['Y'], s=700, marker='football',
+                       edgecolors='black', c='white', zorder=3, label='But', ax=axs_shots['pitch'])
+
+    # Tir cadré (hors libellés "Goal"/"But" déjà au-dessus)
+    df_on = df_shots[df_shots['TypeTir'] == 'Tir cadré']
+    if not df_on.empty:
+        vpitch.scatter(df_on['X'], df_on['Y'], s=200, edgecolors='white', c='white', alpha=0.9,
+                       zorder=2, label='Tir cadré', ax=axs_shots['pitch'])
+
+    # Tir non cadré
+    df_off = df_shots[df_shots['TypeTir'] == 'Tir non cadré']
+    if not df_off.empty:
+        vpitch.scatter(df_off['X'], df_off['Y'], s=200, edgecolors='white', facecolors='#22312b',
+                       zorder=2, label='Tir non cadré', ax=axs_shots['pitch'])
+
+    # Tirs non précisés (si le CSV a seulement "Tir")
+    df_unk = df_shots[df_shots['TypeTir'] == 'Tir']
+    if not df_unk.empty:
+        vpitch.scatter(df_unk['X'], df_unk['Y'], s=120, edgecolors='white', facecolors='#5d6d6a',
+                       alpha=0.8, zorder=1, label='Tir (non précisé)', ax=axs_shots['pitch'])
+
+    # Titre + légende
+    axs_shots['title'].text(0.5, 0.5, "Tirs (tous) — Vue demi-terrain",
+                            color='#dee6ea', va='center', ha='center', fontsize=20, weight='bold')
+    legend = axs_shots['pitch'].legend(facecolor='#22312b', edgecolor='None', loc='lower center', handlelength=2,
+                                       labelcolor='#dee6ea', fontsize=12)
+    for text in legend.get_texts():
+        text.set_color('#dee6ea')
+    axs_shots['endnote'].text(1, 0.5, '', va='center', ha='right', fontsize=16, color='#dee6ea')
+
+    st.pyplot(fig_shots)
+
 # --- TÉLÉCHARGEMENT PDF ---
 st.sidebar.markdown("---")
 if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
@@ -453,7 +553,23 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.cell(terrain_width, 8, "Heatmap des événements", align='C')
             add_footer()
 
-            if combined_images:
+            # 🆕 Page Tirs (si existante)
+            try:
+                if not df_shots.empty:
+                    with NamedTemporaryFile(delete=False, suffix=".png") as tmp_shots:
+                        fig_shots.savefig(tmp_shots.name, bbox_inches='tight', dpi=200, facecolor='#22312b')
+                        temp_files.append(tmp_shots.name)
+
+                    pdf.add_page()
+                    pdf.set_font("Arial", 'B', 18)
+                    pdf.cell(0, 12, "Tirs — Vue demi-terrain", ln=True, align='C')
+                    pdf.ln(5)
+                    pdf.image(tmp_shots.name, x=40, y=30, w=320)
+                    add_footer()
+            except Exception:
+                pass
+
+            if 'combined_images' in locals() and combined_images:
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
                 pdf.cell(0, 12, "Cartes Combinées par Type d'Événement", ln=True, align='C')
@@ -488,7 +604,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 os.unlink(tmp_pdf.name)
 
         finally:
-            for f in temp_files + [img for _, img in combined_images]:
+            for f in temp_files + ([img for _, img in combined_images] if 'combined_images' in locals() else []):
                 try:
                     os.unlink(f)
                 except:
