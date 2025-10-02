@@ -1,12 +1,12 @@
-# am-fcp.py — Version corrigée : zones inversées logiquement (Haute = offensive)
-
-# --- IMPORTS (inchangés) ---
+# am-fcp.py
+# --- IMPORTS (ajouts pour l'authentification) ---
 import uuid
 import json
 import time
 import os
 import hashlib
 import re
+# --- IMPORTS EXISTANTS (inchangés, à conserver) ---
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -19,6 +19,7 @@ from matplotlib.patches import Patch
 from fpdf import FPDF
 from tempfile import NamedTemporaryFile
 import base64
+
 
 # --- PAGE PRINCIPALE ---
 if 'username' in st.session_state:
@@ -101,18 +102,15 @@ displayed_events = st.sidebar.multiselect(
     default=["Pass"] if "Pass" in event_options else event_options[:1]
 )
 
-# --- ✅ CORRECTION MAJEURE : CLASSIFICATION DES ZONES (LOGIQUE FOOTBALLISTIQUE) ---
+# --- ✅ CORRECTION : CLASSIFICATION EN 3 ZONES (SANS "SURFACE RÉP.") ---
 def classify_zone(x, y):
     """
-    Classification CORRECTE :
-    - Surface Rép. : x > 102 et 18 < y < 62 → dans la surface adverse
-    - Haute        : 80 < x <= 102 → tiers offensif (proche surface adverse)
-    - Médiane      : 40 <= x <= 80 → milieu
-    - Basse        : x < 40 → tiers défensif (proche de sa propre surface)
+    Classification en 3 zones :
+    - Haute : x > 80 (zone offensive, inclut la surface adverse)
+    - Médiane : 40 <= x <= 80
+    - Basse : x < 40 (zone défensive)
     """
-    if x > 102 and 18 < y < 62:
-        return 'Surface Rép.'
-    elif x > 80:
+    if x > 80:
         return 'Haute'
     elif x >= 40:
         return 'Médiane'
@@ -150,14 +148,14 @@ PALETTE_OPTIONS = {
 display_names_list = list(PALETTE_OPTIONS.keys())
 
 with st.sidebar.expander("➕ Options Avancées"):
-    arrow_width = st.slider("Épaisseur des flèches", min_value=0.5, max_value=5.0, value=2.0, step=0.5, key="arrow_width")
-    arrow_head_scale = st.slider("Taille de la tête des flèches", min_value=1.0, max_value=10.0, value=2.0, step=0.5, key="arrow_head_scale")
-    arrow_alpha = st.slider("Opacité des flèches", min_value=0.1, max_value=1.0, value=0.8, step=0.1, key="arrow_alpha")
-    point_size = st.slider("Taille des points", min_value=20, max_value=200, value=80, step=10, key="point_size")
-    scatter_alpha = st.slider("Opacité des points", min_value=0.1, max_value=1.0, value=0.8, step=0.1, key="scatter_alpha")
-    heatmap_alpha = st.slider("Opacité de la heatmap", min_value=0.1, max_value=1.0, value=0.85, step=0.05, key="heatmap_alpha")
+    arrow_width = st.slider("Épaisseur des flèches", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
+    arrow_head_scale = st.slider("Taille de la tête des flèches", min_value=1.0, max_value=10.0, value=2.0, step=0.5)
+    arrow_alpha = st.slider("Opacité des flèches", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
+    point_size = st.slider("Taille des points", min_value=20, max_value=200, value=80, step=10)
+    scatter_alpha = st.slider("Opacité des points", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
+    heatmap_alpha = st.slider("Opacité de la heatmap", min_value=0.1, max_value=1.0, value=0.85, step=0.05)
     heatmap_statistic = st.selectbox("Type de statistique", options=['count', 'density'], index=0)
-    show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True, key="show_heatmap_labels")
+    show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True)
     hide_zero_percent_labels = st.checkbox("Masquer les labels 0%", value=True)
     selected_palette_display_name = st.selectbox("Palette de couleurs", options=display_names_list, index=0)
     color_palette_name = PALETTE_OPTIONS[selected_palette_display_name]
@@ -193,7 +191,7 @@ total_events = zone_total['Total'].sum()
 zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
 st.dataframe(zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"}))
 
-# --- ✅ CORRECTION : VISUALISATIONS PAR ZONES ---
+# --- VISUALISATIONS PAR ZONES (3 ZONES SEULEMENT) ---
 st.markdown("---")
 st.header("Visualisations sur Terrain - Analyse par Zones")
 
@@ -205,19 +203,17 @@ common_pitch_params = {
 }
 fig_size = (8, 5.5)
 
-# ✅ RECTANGLES CORRIGÉS : Haute = offensive (x élevé)
+# ✅ RECTANGLES CORRIGÉS : 3 zones, Haute = offensive
 zones_rects = {
-    'Haute': (80, 0, 22, 80),       # x=80 à 102
+    'Haute': (80, 0, 40, 80),       # x=80 à 120
     'Médiane': (40, 0, 40, 80),     # x=40 à 80
-    'Basse': (0, 0, 40, 80),        # x=0 à 40
-    'Surface Rép.': (102, 18, 18, 44)  # x=102 à 120, y=18 à 62
+    'Basse': (0, 0, 40, 80)         # x=0 à 40
 }
 
 zone_colors = {
     'Haute': '#FFD700',          # Or → offensive
     'Médiane': '#98FB98',        # Vert → neutre
-    'Basse': '#87CEEB',          # Bleu → défensive
-    'Surface Rép.': '#FF6347'    # Rouge → danger
+    'Basse': '#87CEEB'           # Bleu → défensive
 }
 
 col_a, col_b = st.columns(2)
@@ -248,7 +244,7 @@ with col_b:
     ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10)
     st.pyplot(fig_count)
 
-# --- VISUALISATIONS PRINCIPALES (inchangées) ---
+# --- VISUALISATIONS PRINCIPALES ---
 st.markdown("---")
 st.subheader("Visualisations sur Terrain")
 
@@ -279,7 +275,6 @@ with col1:
     with st.spinner("Génération de la visualisation des événements..."):
         pitch = Pitch(pitch_color='white', line_color='black', linewidth=1)
         fig1, ax1 = pitch.draw(figsize=(10, 6))
-        legend_elements = []
         for event_type in displayed_events:
             event_data = df_event[df_event['Event'] == event_type]
             color = event_colors.get(event_type, '#333333')
@@ -296,16 +291,8 @@ with col1:
                     event_data[~has_xy2]['X'], event_data[~has_xy2]['Y'],
                     ax=ax1, fc=color, ec='black', lw=0.5, s=point_size, alpha=scatter_alpha
                 )
-            if show_legend:
-                legend_elements.append(Patch(facecolor=color, label=event_type))
         ax1.set_title("Visualisation des Événements", fontsize=12, weight='bold')
         fig1.set_facecolor('white')
-        if show_legend and legend_elements:
-            fig1.set_size_inches(12, 6)
-            ax1.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1.02, 0.5))
-            plt.subplots_adjust(right=0.82)
-        else:
-            plt.tight_layout()
         st.pyplot(fig1)
 
         # Légende dans la sidebar
@@ -323,7 +310,9 @@ with col2:
         fig2.set_facecolor('white')
         df_hm = df_event if len(displayed_events) != 1 else df_event[df_event['Event'] == displayed_events[0]]
         if not df_hm.empty:
-            bin_statistic = pitch.bin_statistic(df_hm['X'], df_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True)
+            bin_statistic = pitch.bin_statistic(
+                df_hm['X'], df_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True
+            )
             pitch.heatmap(bin_statistic, ax=ax2, cmap='Reds', edgecolor='white', alpha=heatmap_alpha)
             if show_heatmap_labels:
                 pitch.label_heatmap(
@@ -335,7 +324,7 @@ with col2:
 
 st.markdown("---")
 
-# --- CARTES COMBINÉES ET PDF (inchangés) ---
+# --- CARTES COMBINÉES PAR TYPE D'ÉVÉNEMENT ---
 if not df_event.empty:
     with st.expander("📊 Carte combinée par type d'événement", expanded=True):
         st.subheader("Carte combinée par type d'événement")
