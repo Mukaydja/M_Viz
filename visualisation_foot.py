@@ -170,211 +170,213 @@ df_filtered = df_filtered[
     df_filtered.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1).isin(selected_zones)
 ]
 df_event = df_filtered.copy()
-
-if df_event.empty:
-    st.warning("Aucun événement ne correspond aux filtres sélectionnés.")
-    st.stop()
-
 df_event['Zone'] = df_event.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1)
 
-# --- TABLEAUX STATISTIQUES ---
-st.header("Quantité d'Événements par Type et Zone")
-zone_counts = df_event.groupby(['Event', 'Zone']).size().unstack(fill_value=0)
-zone_counts['Total'] = zone_counts.sum(axis=1)
-zone_counts = zone_counts.sort_values(by='Total', ascending=False)
-st.dataframe(zone_counts)
+# ======================================================================
+# TABLEAUX + VISUS BASÉS SUR df_event (affichés seulement s'il n'est pas vide)
+# ======================================================================
+if df_event.empty:
+    st.warning("Aucun événement ne correspond aux filtres sélectionnés (section générale). "
+               "Les visualisations de tirs restent disponibles plus bas.")
+else:
+    # --- TABLEAUX STATISTIQUES ---
+    st.header("Quantité d'Événements par Type et Zone")
+    zone_counts = df_event.groupby(['Event', 'Zone']).size().unstack(fill_value=0)
+    zone_counts['Total'] = zone_counts.sum(axis=1)
+    zone_counts = zone_counts.sort_values(by='Total', ascending=False)
+    st.dataframe(zone_counts)
 
-st.subheader("Pourcentage d'Événements par Zone")
-zone_total = df_event['Zone'].value_counts().reset_index()
-zone_total.columns = ['Zone', 'Total']
-total_events = zone_total['Total'].sum()
-zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
-st.dataframe(zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"}))
+    st.subheader("Pourcentage d'Événements par Zone")
+    zone_total = df_event['Zone'].value_counts().reset_index()
+    zone_total.columns = ['Zone', 'Total']
+    total_events = zone_total['Total'].sum()
+    zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
+    st.dataframe(zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"}))
 
-# --- VISUALISATIONS PAR ZONES (3 ZONES SEULEMENT) ---
-st.markdown("---")
-st.header("Visualisations sur Terrain - Analyse par Zones")
+    # --- VISUALISATIONS PAR ZONES (3 ZONES SEULEMENT) ---
+    st.markdown("---")
+    st.header("Visualisations sur Terrain - Analyse par Zones")
 
-common_pitch_params = {
-    'pitch_color': 'white',
-    'line_color': 'black',
-    'linewidth': 1,
-    'line_zorder': 2
-}
-fig_size = (8, 5.5)
+    common_pitch_params = {
+        'pitch_color': 'white',
+        'line_color': 'black',
+        'linewidth': 1,
+        'line_zorder': 2
+    }
+    fig_size = (8, 5.5)
 
-# ✅ RECTANGLES CORRIGÉS : 3 zones, Haute/Basse inversées pour correspondre à la classification
-zones_rects = {
-    'Haute': (0, 0, 40, 80),        # x=0 à 40   (désormais Haute)
-    'Médiane': (40, 0, 40, 80),     # x=40 à 80
-    'Basse': (80, 0, 40, 80)        # x=80 à 120 (désormais Basse)
-}
+    # ✅ RECTANGLES CORRIGÉS : 3 zones, Haute/Basse inversées pour correspondre à la classification
+    zones_rects = {
+        'Haute': (0, 0, 40, 80),        # x=0 à 40   (désormais Haute)
+        'Médiane': (40, 0, 40, 80),     # x=40 à 80
+        'Basse': (80, 0, 40, 80)        # x=80 à 120 (désormais Basse)
+    }
 
-zone_colors = {
-    'Haute': '#FFD700',          # Or
-    'Médiane': '#98FB98',        # Vert
-    'Basse': '#87CEEB'           # Bleu
-}
+    zone_colors = {
+        'Haute': '#FFD700',          # Or
+        'Médiane': '#98FB98',        # Vert
+        'Basse': '#87CEEB'           # Bleu
+    }
 
-col_a, col_b = st.columns(2)
+    col_a, col_b = st.columns(2)
 
-with col_a:
-    pitch_zone = Pitch(**common_pitch_params)
-    fig_zone, ax_zone = pitch_zone.draw(figsize=fig_size)
-    fig_zone.set_facecolor('white')
-    zone_percents = df_event['Zone'].value_counts(normalize=True).to_dict()
-    for zone, (x, y, w, h) in zones_rects.items():
-        percent = zone_percents.get(zone, 0)
-        rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black',
-                             facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
-        ax_zone.add_patch(rect)
-        ax_zone.text(x + w/2, y + h/2, f"{zone}\n{percent*100:.1f}%", ha='center', va='center',
-                     fontsize=8, weight='bold')
-    ax_zone.set_title("Répartition en Pourcentages", fontsize=12, weight='bold', pad=10)
-    st.pyplot(fig_zone)
+    with col_a:
+        pitch_zone = Pitch(**common_pitch_params)
+        fig_zone, ax_zone = pitch_zone.draw(figsize=fig_size)
+        fig_zone.set_facecolor('white')
+        zone_percents = df_event['Zone'].value_counts(normalize=True).to_dict()
+        for zone, (x, y, w, h) in zones_rects.items():
+            percent = zone_percents.get(zone, 0)
+            rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black',
+                                 facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
+            ax_zone.add_patch(rect)
+            ax_zone.text(x + w/2, y + h/2, f"{zone}\n{percent*100:.1f}%", ha='center', va='center',
+                         fontsize=8, weight='bold')
+        ax_zone.set_title("Répartition en Pourcentages", fontsize=12, weight='bold', pad=10)
+        st.pyplot(fig_zone)
 
-with col_b:
-    pitch_count = Pitch(**common_pitch_params)
-    fig_count, ax_count = pitch_count.draw(figsize=fig_size)
-    fig_count.set_facecolor('white')
-    zone_counts_dict = df_event['Zone'].value_counts().to_dict()
-    for zone, (x, y, w, h) in zones_rects.items():
-        count = zone_counts_dict.get(zone, 0)
-        rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black',
-                             facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
-        ax_count.add_patch(rect)
-        ax_count.text(x + w/2, y + h/2, f"{zone}\n{count} evt", ha='center', va='center',
-                      fontsize=8, weight='bold')
-    ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10)
-    st.pyplot(fig_count)
+    with col_b:
+        pitch_count = Pitch(**common_pitch_params)
+        fig_count, ax_count = pitch_count.draw(figsize=fig_size)
+        fig_count.set_facecolor('white')
+        zone_counts_dict = df_event['Zone'].value_counts().to_dict()
+        for zone, (x, y, w, h) in zones_rects.items():
+            count = zone_counts_dict.get(zone, 0)
+            rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black',
+                                 facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
+            ax_count.add_patch(rect)
+            ax_count.text(x + w/2, y + h/2, f"{zone}\n{count} evt", ha='center', va='center',
+                          fontsize=8, weight='bold')
+        ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10)
+        st.pyplot(fig_count)
 
-# --- VISUALISATIONS PRINCIPALES ---
-st.markdown("---")
-st.subheader("Visualisations sur Terrain")
+    # --- VISUALISATIONS PRINCIPALES ---
+    st.markdown("---")
+    st.subheader("Visualisations sur Terrain")
 
-base_colors = {
-    'Shot': '#FF4B4B', 'Pass': '#6C9AC3', 'Dribble': '#FFA500',
-    'Cross': '#92c952', 'Tackle': '#A52A2A', 'Interception': '#FFD700',
-    'Clearance': '#00CED1'
-}
+    base_colors = {
+        'Shot': '#FF4B4B', 'Pass': '#6C9AC3', 'Dribble': '#FFA500',
+        'Cross': '#92c952', 'Tackle': '#A52A2A', 'Interception': '#FFD700',
+        'Clearance': '#00CED1'
+    }
 
-def get_event_colors(event_list, palette_name, base_colors_dict):
-    if palette_name == 'Par défaut':
-        cmap_for_others = cm.get_cmap('tab20', max(1, len(event_list)))
-        generated_colors = {event: mcolors.to_hex(cmap_for_others(i)) for i, event in enumerate([e for e in event_list if e not in base_colors_dict])}
-        return {**base_colors_dict, **generated_colors}
-    else:
-        try:
-            cmap_selected = cm.get_cmap(palette_name, max(1, len(event_list)))
-            return {event: mcolors.to_hex(cmap_selected(i)) for i, event in enumerate(event_list)}
-        except ValueError:
-            cmap_fallback = cm.get_cmap('tab20', max(1, len(event_list)))
-            return {event: mcolors.to_hex(cmap_fallback(i)) for i, event in enumerate(event_list)}
+    def get_event_colors(event_list, palette_name, base_colors_dict):
+        if palette_name == 'Par défaut':
+            cmap_for_others = cm.get_cmap('tab20', max(1, len(event_list)))
+            generated_colors = {event: mcolors.to_hex(cmap_for_others(i)) for i, event in enumerate([e for e in event_list if e not in base_colors_dict])}
+            return {**base_colors_dict, **generated_colors}
+        else:
+            try:
+                cmap_selected = cm.get_cmap(palette_name, max(1, len(event_list)))
+                return {event: mcolors.to_hex(cmap_selected(i)) for i, event in enumerate(event_list)}
+            except ValueError:
+                cmap_fallback = cm.get_cmap('tab20', max(1, len(event_list)))
+                return {event: mcolors.to_hex(cmap_fallback(i)) for i, event in enumerate(event_list)}
 
-event_colors = get_event_colors(event_options, color_palette_name, base_colors)
+    event_colors = get_event_colors(event_options, color_palette_name, base_colors)
 
-col1, col2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
-with col1:
-    with st.spinner("Génération de la visualisation des événements..."):
-        pitch = Pitch(pitch_color='white', line_color='black', linewidth=1)
-        fig1, ax1 = pitch.draw(figsize=(10, 6))
-        for event_type in displayed_events:
-            event_data = df_event[df_event['Event'] == event_type]
-            color = event_colors.get(event_type, '#333333')
-            has_xy2 = event_data[['X2', 'Y2']].notna().all(axis=1)
-            if has_xy2.any():
-                pitch.arrows(
-                    event_data[has_xy2]['X'], event_data[has_xy2]['Y'],
-                    event_data[has_xy2]['X2'], event_data[has_xy2]['Y2'],
-                    color=color, width=arrow_width, headwidth=3 * arrow_head_scale,
-                    headlength=2 * arrow_head_scale, alpha=arrow_alpha, ax=ax1
-                )
-            if (~has_xy2).any():
-                pitch.scatter(
-                    event_data[~has_xy2]['X'], event_data[~has_xy2]['Y'],
-                    ax=ax1, fc=color, ec='black', lw=0.5, s=point_size, alpha=scatter_alpha
-                )
-        ax1.set_title("Visualisation des Événements", fontsize=12, weight='bold')
-        fig1.set_facecolor('white')
-        st.pyplot(fig1)
-
-        # Légende dans la sidebar
-        if show_legend:
-            with st.sidebar:
-                st.markdown("### 🎨 Légende des événements")
-                for event in displayed_events:
-                    color = event_colors.get(event, '#333333')
-                    st.markdown(f"<span style='color:{color}; font-weight:bold;'>●</span> {event}", unsafe_allow_html=True)
-
-with col2:
-    with st.spinner("Génération de la heatmap..."):
-        pitch = Pitch(pitch_type='statsbomb', pitch_color='white', line_color='black', line_zorder=2)
-        fig2, ax2 = pitch.draw(figsize=(10, 6))
-        fig2.set_facecolor('white')
-        df_hm = df_event if len(displayed_events) != 1 else df_event[df_event['Event'] == displayed_events[0]]
-        if not df_hm.empty:
-            bin_statistic = pitch.bin_statistic(
-                df_hm['X'], df_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True
-            )
-            pitch.heatmap(bin_statistic, ax=ax2, cmap='Reds', edgecolor='white', alpha=heatmap_alpha)
-            if show_heatmap_labels:
-                pitch.label_heatmap(
-                    bin_statistic, ax=ax2, str_format='{:.0%}', fontsize=12,
-                    ha='center', va='center', exclude_zeros=hide_zero_percent_labels, color='black'
-                )
-        ax2.set_title("Heatmap des Événements", fontsize=12, weight='bold')
-        st.pyplot(fig2)
-
-st.markdown("---")
-
-# --- CARTES COMBINÉES PAR TYPE D'ÉVÉNEMENT ---
-if not df_event.empty:
-    with st.expander("📊 Carte combinée par type d'événement", expanded=True):
-        st.subheader("Carte combinée par type d'événement")
-        grouped = [displayed_events[i:i + 3] for i in range(0, len(displayed_events), 3)]
-        combined_images = []
-        for group in grouped:
-            row = st.container().columns(len(group))
-            for i, event_type in enumerate(group):
-                df_type = df_event[df_event['Event'] == event_type]
-                if df_type.empty:
-                    row[i].info(f"Aucun événement pour {event_type}")
-                    continue
+    with col1:
+        with st.spinner("Génération de la visualisation des événements..."):
+            pitch = Pitch(pitch_color='white', line_color='black', linewidth=1)
+            fig1, ax1 = pitch.draw(figsize=(10, 6))
+            for event_type in displayed_events:
+                event_data = df_event[df_event['Event'] == event_type]
                 color = event_colors.get(event_type, '#333333')
-                pitch = Pitch(pitch_color='white', line_color='black', line_zorder=2)
-                fig, ax = pitch.draw(figsize=(6, 4))
-                arrows_data = df_type[df_type[['X2', 'Y2']].notna().all(axis=1)]
-                if not arrows_data.empty:
+                has_xy2 = event_data[['X2', 'Y2']].notna().all(axis=1)
+                if has_xy2.any():
                     pitch.arrows(
-                        arrows_data['X'], arrows_data['Y'],
-                        arrows_data['X2'], arrows_data['Y2'],
-                        ax=ax, zorder=10, color=color, alpha=arrow_alpha, width=arrow_width,
-                        headwidth=3 * arrow_head_scale, headlength=2 * arrow_head_scale
+                        event_data[has_xy2]['X'], event_data[has_xy2]['Y'],
+                        event_data[has_xy2]['X2'], event_data[has_xy2]['Y2'],
+                        color=color, width=arrow_width, headwidth=3 * arrow_head_scale,
+                        headlength=2 * arrow_head_scale, alpha=arrow_alpha, ax=ax1
                     )
-                points_data = df_type[df_type[['X2', 'Y2']].isna().any(axis=1)]
-                if not points_data.empty:
+                if (~has_xy2).any():
                     pitch.scatter(
-                        points_data['X'], points_data['Y'], ax=ax,
-                        fc=color, marker='o', s=point_size, ec='black', lw=1,
-                        alpha=scatter_alpha, zorder=5
+                        event_data[~has_xy2]['X'], event_data[~has_xy2]['Y'],
+                        ax=ax1, fc=color, ec='black', lw=0.5, s=point_size, alpha=scatter_alpha
                     )
-                bin_stat = pitch.bin_statistic(df_type['X'], df_type['Y'], bins=(6, 5), normalize=True)
-                event_cmaps = ['Reds', 'Blues', 'Greens', 'Purples', 'Oranges', 'Greys', 'YlGnBu', 'PuRd']
-                cmap_name = event_cmaps[i % len(event_cmaps)]
-                pitch.heatmap(bin_stat, ax=ax, cmap=cmap_name, edgecolor='white', alpha=heatmap_alpha)
+            ax1.set_title("Visualisation des Événements", fontsize=12, weight='bold')
+            fig1.set_facecolor('white')
+            st.pyplot(fig1)
+
+            # Légende dans la sidebar
+            if show_legend:
+                with st.sidebar:
+                    st.markdown("### 🎨 Légende des événements")
+                    for event in displayed_events:
+                        color = event_colors.get(event, '#333333')
+                        st.markdown(f"<span style='color:{color}; font-weight:bold;'>●</span> {event}", unsafe_allow_html=True)
+
+    with col2:
+        with st.spinner("Génération de la heatmap..."):
+            pitch = Pitch(pitch_type='statsbomb', pitch_color='white', line_color='black', line_zorder=2)
+            fig2, ax2 = pitch.draw(figsize=(10, 6))
+            fig2.set_facecolor('white')
+            df_hm = df_event if len(displayed_events) != 1 else df_event[df_event['Event'] == displayed_events[0]]
+            if not df_hm.empty:
+                bin_statistic = pitch.bin_statistic(
+                    df_hm['X'], df_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True
+                )
+                pitch.heatmap(bin_statistic, ax=ax2, cmap='Reds', edgecolor='white', alpha=heatmap_alpha)
                 if show_heatmap_labels:
                     pitch.label_heatmap(
-                        bin_stat, ax=ax, str_format='{:.0%}', fontsize=10,
+                        bin_statistic, ax=ax2, str_format='{:.0%}', fontsize=12,
                         ha='center', va='center', exclude_zeros=hide_zero_percent_labels, color='black'
                     )
-                ax.set_title(event_type, color='black', fontsize=12, weight='bold')
-                fig.set_facecolor('white')
-                row[i].pyplot(fig)
-                with NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
-                    fig.savefig(tmpfile.name, bbox_inches='tight', dpi=150)
-                    combined_images.append((event_type, tmpfile.name))
-                plt.close(fig)
+            ax2.set_title("Heatmap des Événements", fontsize=12, weight='bold')
+            st.pyplot(fig2)
+
+    st.markdown("---")
+
+    # --- CARTES COMBINÉES PAR TYPE D'ÉVÉNEMENT ---
+    if not df_event.empty:
+        with st.expander("📊 Carte combinée par type d'événement", expanded=True):
+            st.subheader("Carte combinée par type d'événement")
+            grouped = [displayed_events[i:i + 3] for i in range(0, len(displayed_events), 3)]
+            combined_images = []
+            for group in grouped:
+                row = st.container().columns(len(group))
+                for i, event_type in enumerate(group):
+                    df_type = df_event[df_event['Event'] == event_type]
+                    if df_type.empty:
+                        row[i].info(f"Aucun événement pour {event_type}")
+                        continue
+                    color = event_colors.get(event_type, '#333333')
+                    pitch = Pitch(pitch_color='white', line_color='black', line_zorder=2)
+                    fig, ax = pitch.draw(figsize=(6, 4))
+                    arrows_data = df_type[df_type[['X2', 'Y2']].notna().all(axis=1)]
+                    if not arrows_data.empty:
+                        pitch.arrows(
+                            arrows_data['X'], arrows_data['Y'],
+                            arrows_data['X2'], arrows_data['Y2'],
+                            ax=ax, zorder=10, color=color, alpha=arrow_alpha, width=arrow_width,
+                            headwidth=3 * arrow_head_scale, headlength=2 * arrow_head_scale
+                        )
+                    points_data = df_type[df_type[['X2', 'Y2']].isna().any(axis=1)]
+                    if not points_data.empty:
+                        pitch.scatter(
+                            points_data['X'], points_data['Y'], ax=ax,
+                            fc=color, marker='o', s=point_size, ec='black', lw=1,
+                            alpha=scatter_alpha, zorder=5
+                        )
+                    bin_stat = pitch.bin_statistic(df_type['X'], df_type['Y'], bins=(6, 5), normalize=True)
+                    event_cmaps = ['Reds', 'Blues', 'Greens', 'Purples', 'Oranges', 'Greys', 'YlGnBu', 'PuRd']
+                    cmap_name = event_cmaps[i % len(event_cmaps)]
+                    pitch.heatmap(bin_stat, ax=ax, cmap=cmap_name, edgecolor='white', alpha=heatmap_alpha)
+                    if show_heatmap_labels:
+                        pitch.label_heatmap(
+                            bin_stat, ax=ax, str_format='{:.0%}', fontsize=10,
+                            ha='center', va='center', exclude_zeros=hide_zero_percent_labels, color='black'
+                        )
+                    ax.set_title(event_type, color='black', fontsize=12, weight='bold')
+                    fig.set_facecolor('white')
+                    row[i].pyplot(fig)
+                    with NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
+                        fig.savefig(tmpfile.name, bbox_inches='tight', dpi=150)
+                        combined_images.append((event_type, tmpfile.name))
+                    plt.close(fig)
 
 # ======================================================================
 # 🆕 VISUALISATION DÉDIÉE — Tirs / Tir cadré / Tir non cadré (exclut le reste)
@@ -397,14 +399,10 @@ df_base = df_base[
 ]
 
 # Détermine les lignes de tirs
-event_series = df_base['Event'].astype(str)
-is_shot_generic = event_series.isin(SHOT_NAMES)
-is_on_target = event_series.isin(ON_TARGET_NAMES)
-is_off_target = event_series.isin(OFF_TARGET_NAMES)
-
-# Cas où le CSV n'a qu'un type "Tir" mais fournit un indicateur via X2/Y2 (optionnel) :
-# (on ne force rien ici; on ne classe que si noms explicites)
-is_goal = event_series.isin({'Goal', 'But'})  # inclus déjà dans ON_TARGET_NAMES
+is_shot_generic = df_base['Event'].isin(SHOT_NAMES)
+is_on_target = df_base['Event'].isin(ON_TARGET_NAMES)
+is_off_target = df_base['Event'].isin(OFF_TARGET_NAMES)
+is_goal = df_base['Event'].isin({'Goal', 'But'})
 
 df_shots = df_base[is_shot_generic | is_on_target | is_off_target | is_goal].copy()
 
@@ -413,14 +411,12 @@ if df_shots.empty:
 else:
     # Crée une colonne TypeTir : 'Cadré', 'Non cadré', 'Tir'
     def label_shot(e):
-        if e in ON_TARGET_NAMES:
+        if e in ON_TARGET_NAMES or e in {'Goal', 'But'}:
             return 'Tir cadré'
         if e in OFF_TARGET_NAMES:
             return 'Tir non cadré'
         if e in SHOT_NAMES:
             return 'Tir'
-        if e in {'Goal', 'But'}:
-            return 'Tir cadré'
         return 'Autre'
 
     df_shots['TypeTir'] = df_shots['Event'].map(label_shot)
@@ -440,15 +436,14 @@ else:
                                        grid_height=0.82)
     fig_shots.set_facecolor('#22312b')
 
-    # Marqueurs : but (ballon), cadré (plein), non cadré (contour)
-    # Buts (si présents explicitement)
-    df_goals = df_shots[event_series.isin({'Goal', 'But'})]
+    # Buts
+    df_goals = df_shots[df_shots['Event'].isin({'Goal', 'But'})]
     if not df_goals.empty:
         vpitch.scatter(df_goals['X'], df_goals['Y'], s=700, marker='football',
                        edgecolors='black', c='white', zorder=3, label='But', ax=axs_shots['pitch'])
 
-    # Tir cadré (hors libellés "Goal"/"But" déjà au-dessus)
-    df_on = df_shots[df_shots['TypeTir'] == 'Tir cadré']
+    # Tir cadré (hors "But")
+    df_on = df_shots[df_shots['TypeTir'] == 'Tir cadré' & ~df_shots['Event'].isin({'Goal', 'But'})] if not df_shots.empty else pd.DataFrame()
     if not df_on.empty:
         vpitch.scatter(df_on['X'], df_on['Y'], s=200, edgecolors='white', c='white', alpha=0.9,
                        zorder=2, label='Tir cadré', ax=axs_shots['pitch'])
@@ -459,7 +454,7 @@ else:
         vpitch.scatter(df_off['X'], df_off['Y'], s=200, edgecolors='white', facecolors='#22312b',
                        zorder=2, label='Tir non cadré', ax=axs_shots['pitch'])
 
-    # Tirs non précisés (si le CSV a seulement "Tir")
+    # Tirs non précisés
     df_unk = df_shots[df_shots['TypeTir'] == 'Tir']
     if not df_unk.empty:
         vpitch.scatter(df_unk['X'], df_unk['Y'], s=120, edgecolors='white', facecolors='#5d6d6a',
@@ -468,8 +463,7 @@ else:
     # Titre + légende
     axs_shots['title'].text(0.5, 0.5, "Tirs (tous) — Vue demi-terrain",
                             color='#dee6ea', va='center', ha='center', fontsize=20, weight='bold')
-    legend = axs_shots['pitch'].legend(facecolor='#22312b', edgecolor='None', loc='lower center', handlelength=2,
-                                       labelcolor='#dee6ea', fontsize=12)
+    legend = axs_shots['pitch'].legend(facecolor='#22312b', edgecolor='None', loc='lower center', handlelength=2)
     for text in legend.get_texts():
         text.set_color('#dee6ea')
     axs_shots['endnote'].text(1, 0.5, '', va='center', ha='right', fontsize=16, color='#dee6ea')
@@ -490,6 +484,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
 
         temp_files = []
         try:
+            # Page de garde
             pdf.add_page()
             pdf.set_font("Arial", 'B', 24)
             pdf.ln(40)
@@ -503,72 +498,70 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.cell(0, 10, f"Zones : {', '.join(selected_zones)}", ln=True, align='C')
             pdf.ln(5)
             pdf.cell(0, 10, f"Événements analysés : {', '.join(displayed_events)}", ln=True, align='C')
-            pdf.ln(5)
-            pdf.set_font("Arial", 'I', 10)
-            pdf.cell(0, 10, f"Nombre total d'événements : {len(df_event)}", ln=True, align='C')
             add_footer()
 
-            pdf.add_page()
-            pdf.set_font("Arial", 'B', 18)
-            pdf.cell(0, 12, "Analyse par Zones du Terrain", ln=True, align='C')
-            pdf.ln(8)
+            # Pages analytiques générales (si dispos)
+            if 'fig_zone' in locals() and 'fig_count' in locals():
+                pdf.add_page()
+                pdf.set_font("Arial", 'B', 18)
+                pdf.cell(0, 12, "Analyse par Zones du Terrain", ln=True, align='C')
+                pdf.ln(8)
 
-            with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_pct:
-                fig_zone.savefig(tmp_zone_pct.name, bbox_inches='tight', dpi=200, facecolor='white')
-                temp_files.append(tmp_zone_pct.name)
-            with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_count:
-                fig_count.savefig(tmp_zone_count.name, bbox_inches='tight', dpi=200, facecolor='white')
-                temp_files.append(tmp_zone_count.name)
+                with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_pct:
+                    fig_zone.savefig(tmp_zone_pct.name, bbox_inches='tight', dpi=200, facecolor='white')
+                    temp_files.append(tmp_zone_pct.name)
+                with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_count:
+                    fig_count.savefig(tmp_zone_count.name, bbox_inches='tight', dpi=200, facecolor='white')
+                    temp_files.append(tmp_zone_count.name)
 
-            terrain_y = 60
-            pdf.image(tmp_zone_pct.name, x=50, y=terrain_y, w=140, h=90)
-            pdf.image(tmp_zone_count.name, x=220, y=terrain_y, w=140, h=90)
-            pdf.set_xy(50, terrain_y + 95)
-            pdf.set_font("Arial", 'B', 11)
-            pdf.cell(140, 6, "Répartition en Pourcentages", align='C')
-            pdf.set_xy(220, terrain_y + 95)
-            pdf.cell(140, 6, "Nombre d'Événements", align='C')
-            add_footer()
+                terrain_y = 60
+                pdf.image(tmp_zone_pct.name, x=50, y=terrain_y, w=140, h=90)
+                pdf.image(tmp_zone_count.name, x=220, y=terrain_y, w=140, h=90)
+                pdf.set_xy(50, terrain_y + 95)
+                pdf.set_font("Arial", 'B', 11)
+                pdf.cell(140, 6, "Répartition en Pourcentages", align='C')
+                pdf.set_xy(220, terrain_y + 95)
+                pdf.cell(140, 6, "Nombre d'Événements", align='C')
+                add_footer()
 
-            pdf.add_page()
-            pdf.set_font("Arial", 'B', 18)
-            pdf.cell(0, 12, "Visualisations sur Terrain", ln=True, align='C')
-            pdf.ln(10)
+            if 'fig1' in locals() and 'fig2' in locals():
+                pdf.add_page()
+                pdf.set_font("Arial", 'B', 18)
+                pdf.cell(0, 12, "Visualisations sur Terrain", ln=True, align='C')
+                pdf.ln(10)
 
-            with NamedTemporaryFile(delete=False, suffix=".png") as tmp_fig1:
-                fig1.savefig(tmp_fig1.name, bbox_inches='tight', dpi=200, facecolor='white')
-                temp_files.append(tmp_fig1.name)
-            with NamedTemporaryFile(delete=False, suffix=".png") as tmp_fig2:
-                fig2.savefig(tmp_fig2.name, bbox_inches='tight', dpi=200, facecolor='white')
-                temp_files.append(tmp_fig2.name)
+                with NamedTemporaryFile(delete=False, suffix=".png") as tmp_fig1:
+                    fig1.savefig(tmp_fig1.name, bbox_inches='tight', dpi=200, facecolor='white')
+                    temp_files.append(tmp_fig1.name)
+                with NamedTemporaryFile(delete=False, suffix=".png") as tmp_fig2:
+                    fig2.savefig(tmp_fig2.name, bbox_inches='tight', dpi=200, facecolor='white')
+                    temp_files.append(tmp_fig2.name)
 
-            terrain_width = 180
-            terrain_height = 120
-            pdf.image(tmp_fig1.name, x=30, y=40, w=terrain_width, h=terrain_height)
-            pdf.image(tmp_fig2.name, x=230, y=40, w=terrain_width, h=terrain_height)
-            pdf.set_xy(30, 165)
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(terrain_width, 8, "Événements sur le terrain", align='C')
-            pdf.set_xy(230, 165)
-            pdf.cell(terrain_width, 8, "Heatmap des événements", align='C')
-            add_footer()
+                terrain_width = 180
+                terrain_height = 120
+                pdf.image(tmp_fig1.name, x=30, y=40, w=terrain_width, h=terrain_height)
+                pdf.image(tmp_fig2.name, x=230, y=40, w=terrain_width, h=terrain_height)
+                pdf.set_xy(30, 165)
+                pdf.set_font("Arial", 'B', 12)
+                pdf.cell(terrain_width, 8, "Événements sur le terrain", align='C')
+                pdf.set_xy(230, 165)
+                pdf.cell(terrain_width, 8, "Heatmap des événements", align='C')
+                add_footer()
 
             # 🆕 Page Tirs (si existante)
-            try:
-                if not df_shots.empty:
-                    with NamedTemporaryFile(delete=False, suffix=".png") as tmp_shots:
-                        fig_shots.savefig(tmp_shots.name, bbox_inches='tight', dpi=200, facecolor='#22312b')
-                        temp_files.append(tmp_shots.name)
+            if 'fig_shots' in locals():
+                with NamedTemporaryFile(delete=False, suffix=".png") as tmp_shots:
+                    fig_shots.savefig(tmp_shots.name, bbox_inches='tight', dpi=200, facecolor='#22312b')
+                    temp_files.append(tmp_shots.name)
 
-                    pdf.add_page()
-                    pdf.set_font("Arial", 'B', 18)
-                    pdf.cell(0, 12, "Tirs — Vue demi-terrain", ln=True, align='C')
-                    pdf.ln(5)
-                    pdf.image(tmp_shots.name, x=40, y=30, w=320)
-                    add_footer()
-            except Exception:
-                pass
+                pdf.add_page()
+                pdf.set_font("Arial", 'B', 18)
+                pdf.cell(0, 12, "Tirs — Vue demi-terrain", ln=True, align='C')
+                pdf.ln(5)
+                pdf.image(tmp_shots.name, x=40, y=30, w=320)
+                add_footer()
 
+            # Cartes combinées (si dispos)
             if 'combined_images' in locals() and combined_images:
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
