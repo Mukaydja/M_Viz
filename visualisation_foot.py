@@ -1,27 +1,155 @@
 # am-fcp.py
-# --- IMPORTS (ajouts pour l'authentification) ---
-import uuid
-import json
-import time
+# ======================= IMPORTS =======================
 import os
-import hashlib
 import re
-# --- IMPORTS EXISTANTS (inchangés, à conserver) ---
+import io
+import csv
+import time
+import json
+import uuid
+import base64
+import hashlib
+from datetime import datetime
+
 import streamlit as st
 import pandas as pd
 import numpy as np
+
+# Visualisation
 from mplsoccer import Pitch, VerticalPitch
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
-from matplotlib import patheffects
-from matplotlib.patches import Patch
+
+# PDF
 from fpdf import FPDF
 from tempfile import NamedTemporaryFile
-import base64
+
+# DNS (validation MX – optionnel mais recommandé)
+try:
+    import dns.resolver  # pip install dnspython
+    _HAS_DNSPYTHON = True
+except Exception:
+    _HAS_DNSPYTHON = False
+
+# Google Sheets
+# pip install gspread google-auth
+import gspread
+from google.oauth2.service_account import Credentials
 
 
-# --- PAGE PRINCIPALE ---
+# ======================= CONFIG / CONSTANTES =======================
+# ID de ton Google Sheet
+SPREADSHEET_ID = "10ymrP1mAGDI-f1U6ShY7MxTx5zuF_QCqlMC7z6DLFp0"
+REQUIRED_HEADERS = ["Nom", "Prénom", "Email"]  # entêtes attendues dans la 1ère feuille
+
+EMAIL_REGEX = re.compile(
+    r"^(?P<local>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+)@(?P<domain>[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)$"
+)
+
+# ======================= FONCTIONS GOOGLE SHEETS =======================
+@st.cache_resource(show_spinner=False)
+def get_gs_client():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
+    return gspread.authorize(creds)
+
+def get_target_worksheet():
+    """Retourne la première feuille du doc. Crée l’entête si vide."""
+    gc = get_gs_client()
+    sh = gc.open_by_key(SPREADSHEET_ID)
+    ws = sh.sheet1
+    first_row = ws.row_values(1)
+    if not first_row:
+        ws.update("A1:C1", [REQUIRED_HEADERS])
+    return ws
+
+def append_row_to_sheet(nom: str, prenom: str, email: str):
+    ws = get_target_worksheet()
+    ws.append_row([nom, prenom, email], value_input_option="RAW")
+
+# ======================= VALIDATION EMAIL =======================
+def valid_syntax(email: str):
+    m = EMAIL_REGEX.match(email.strip())
+    if not m:
+        return False, None
+    return True, m.group("domain").lower()
+
+def domain_has_mx(domain: str) -> bool:
+    if _HAS_DNSPYTHON:
+        try:
+            answers = dns.resolver.resolve(domain, "MX")
+            return len(answers) > 0
+        except Exception:
+            # Fallback A/AAAA : certains domaines n'exposent pas MX mais résolvent quand même
+            for rr in ("A", "AAAA"):
+                try:
+                    dns.resolver.resolve(domain, rr)
+                    return True
+                except Exception:
+                    continue
+            return False
+    # Si dnspython absent : on accepte après syntaxe (sinon return False pour durcir)
+    return True
+
+
+# ======================= GARDE D’ENTRÉE =======================
+# (A placer avant toute UI principale)
+if "gate_ok" not in st.session_state:
+    st.session_state["gate_ok"] = False
+
+if not st.session_state["gate_ok"]:
+    st.set_page_config(page_title="Visualisation Foot", layout="wide")
+    st.title("🔒 Accès restreint")
+    st.write("Merci de renseigner vos informations pour accéder à l’application.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        nom = st.text_input("Nom", value="")
+        prenom = st.text_input("Prénom", value="")
+    with col2:
+        email = st.text_input("Adresse e-mail", value="", placeholder="prenom.nom@domaine.com")
+        if not _HAS_DNSPYTHON:
+            st.caption("ℹ️ Vérification MX limitée (dnspython non installé).")
+
+    consent = st.checkbox("J’autorise le stockage de ces informations dans le fichier Google Sheet.")
+    submit = st.button("Entrer")
+
+    if submit:
+        if not nom.strip() or not prenom.strip() or not email.strip():
+            st.error("Tous les champs sont obligatoires (Nom, Prénom, Adresse e-mail).")
+            st.stop()
+
+        ok, domain = valid_syntax(email)
+        if not ok:
+            st.error("Adresse e-mail invalide (syntaxe).")
+            st.stop()
+
+        if not domain_has_mx(domain):
+            st.error("Le domaine de l’adresse ne semble pas accepter d’e-mails (MX introuvable).")
+            st.stop()
+
+        if not consent:
+            st.error("Veuillez cocher la case de consentement.")
+            st.stop()
+
+        try:
+            append_row_to_sheet(nom.strip().title(), prenom.strip().title(), email.strip().lower())
+        except Exception as e:
+            st.error(f"Impossible d’enregistrer dans le Google Sheet : {e}")
+            st.stop()
+
+        st.success("✅ Informations enregistrées. Accès autorisé.")
+        st.session_state["gate_ok"] = True
+        st.rerun()
+
+    st.stop()
+
+
+# ======================= PAGE PRINCIPALE =======================
 if 'username' in st.session_state:
     st.set_page_config(page_title=f"Visualisation Foot - {st.session_state['username']}", layout="wide")
     st.title(f"⚽ Outil de Visualisation de Données Footballistiques - Bienvenue, {st.session_state['username']} !")
@@ -29,14 +157,14 @@ else:
     st.set_page_config(page_title="Visualisation Foot", layout="wide")
     st.title("Outil de Visualisation de Données Footballistiques")
 
-# --- UPLOAD CSV ---
+# ======================= UPLOAD CSV =======================
 st.sidebar.header("📁 Données")
 uploaded_file = st.sidebar.file_uploader("Importer un fichier CSV", type=["csv"])
 if not uploaded_file:
     st.warning("Veuillez importer un fichier CSV.")
     st.stop()
 
-# --- LECTURE DU CSV ---
+# ======================= LECTURE CSV =======================
 with st.spinner("Lecture du fichier CSV..."):
     try:
         content = uploaded_file.read().decode('utf-8')
@@ -47,14 +175,14 @@ with st.spinner("Lecture du fichier CSV..."):
         st.error(f"Erreur lors de la lecture du CSV : {e}")
         st.stop()
 
-# --- APERÇU DES DONNÉES ---
+# ======================= APERÇU =======================
 with st.expander("🔍 Aperçu des données importées"):
     st.write("**Structure du DataFrame :**")
     st.write(df.dtypes)
     st.write("**Premières lignes :**")
     st.dataframe(df.head())
 
-# --- VÉRIFICATION DES COLONNES ---
+# ======================= VÉRIF COLONNES =======================
 required_columns = ['Team', 'Player', 'Event', 'X', 'Y', 'X2', 'Y2']
 missing_columns = [col for col in required_columns if col not in df.columns]
 if missing_columns:
@@ -63,7 +191,7 @@ if missing_columns:
 df = df[required_columns]
 df = df.dropna(subset=['Player', 'Event', 'X', 'Y']).reset_index(drop=True)
 
-# --- CONVERSION DES COORDONNÉES ---
+# ======================= CONVERSION COORDS =======================
 for col in ['X', 'Y', 'X2', 'Y2']:
     df[col] = pd.to_numeric(df[col], errors='coerce')
 
@@ -75,7 +203,7 @@ if pd.notna(max_coord) and max_coord <= 105 and max_coord > 50:
     df['Y'] *= 0.8
     df['Y2'] *= 0.8
 
-# --- NETTOYAGE DES TEXTES ---
+# ======================= NETTOYAGE TEXTES =======================
 df['Team'] = df['Team'].fillna('AS Monaco').astype(str).str.strip().str.title()
 df['Player'] = df['Player'].fillna('').astype(str).str.strip().str.title()
 df['Event'] = (
@@ -88,7 +216,7 @@ df['Event'] = (
     .str.title()
 )
 
-# --- FILTRES ---
+# ======================= FILTRES =======================
 st.sidebar.header("🔍 Filtres Principaux")
 event_options = sorted(df['Event'].dropna().unique())
 player_options = sorted(df['Player'].dropna().unique())
@@ -102,13 +230,13 @@ displayed_events = st.sidebar.multiselect(
     default=["Pass"] if "Pass" in event_options else event_options[:1]
 )
 
-# --- ✅ CORRECTION : CLASSIFICATION EN 3 ZONES (Haute/Basse inversées) ---
+# ======================= ZONES (inversion Haute/Basse) =======================
 def classify_zone(x, y):
     """
     Classification en 3 zones :
-    - Haute : x < 40 (désormais zone côté gauche/défensive)
+    - Haute : x < 40
     - Médiane : 40 <= x <= 80
-    - Basse : x > 80 (désormais zone côté droit/offensive)
+    - Basse : x > 80
     """
     if x < 40:
         return 'Haute'
@@ -117,7 +245,6 @@ def classify_zone(x, y):
     else:
         return 'Basse'
 
-# --- Ajout temporaire pour le filtre ---
 df['Zone_temp'] = df.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1)
 zone_options = sorted(df['Zone_temp'].dropna().unique())
 del df['Zone_temp']
@@ -129,7 +256,7 @@ selected_zones = st.sidebar.multiselect(
     help="Filtrer les événements par zone où ils ont eu lieu."
 )
 
-# --- OPTIONS D'AFFICHAGE ---
+# ======================= OPTIONS D'AFFICHAGE =======================
 st.sidebar.header("⚙️ Options d'Affichage")
 show_legend = st.sidebar.checkbox("Afficher la légende des événements", value=True)
 
@@ -160,7 +287,7 @@ with st.sidebar.expander("➕ Options Avancées"):
     selected_palette_display_name = st.selectbox("Palette de couleurs", options=display_names_list, index=0)
     color_palette_name = PALETTE_OPTIONS[selected_palette_display_name]
 
-# --- APPLICATION DES FILTRES GÉNÉRAUX ---
+# ======================= APPLICATION DES FILTRES GÉNÉRAUX =======================
 df_filtered = df[
     df['Team'].isin(selected_teams) &
     df['Player'].isin(selected_players) &
@@ -172,14 +299,12 @@ df_filtered = df_filtered[
 df_event = df_filtered.copy()
 df_event['Zone'] = df_event.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1)
 
-# ======================================================================
-# TABLEAUX + VISUS BASÉS SUR df_event (affichés seulement s'il n'est pas vide)
-# ======================================================================
+# ======================= TABLEAUX + VISUS (général) =======================
 if df_event.empty:
     st.warning("Aucun événement ne correspond aux filtres sélectionnés (section générale). "
                "Les visualisations de tirs restent disponibles plus bas.")
 else:
-    # --- TABLEAUX STATISTIQUES ---
+    # ---- Tableaux ----
     st.header("Quantité d'Événements par Type et Zone")
     zone_counts = df_event.groupby(['Event', 'Zone']).size().unstack(fill_value=0)
     zone_counts['Total'] = zone_counts.sum(axis=1)
@@ -193,30 +318,19 @@ else:
     zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
     st.dataframe(zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"}))
 
-    # --- VISUALISATIONS PAR ZONES (3 ZONES SEULEMENT) ---
+    # ---- Analyse par zones (rectangles inversés) ----
     st.markdown("---")
     st.header("Visualisations sur Terrain - Analyse par Zones")
 
-    common_pitch_params = {
-        'pitch_color': 'white',
-        'line_color': 'black',
-        'linewidth': 1,
-        'line_zorder': 2
-    }
+    common_pitch_params = {'pitch_color': 'white', 'line_color': 'black', 'linewidth': 1, 'line_zorder': 2}
     fig_size = (8, 5.5)
 
-    # ✅ RECTANGLES CORRIGÉS : 3 zones, Haute/Basse inversées pour correspondre à la classification
     zones_rects = {
-        'Haute': (0, 0, 40, 80),        # x=0 à 40   (désormais Haute)
+        'Haute': (0, 0, 40, 80),        # x=0 à 40
         'Médiane': (40, 0, 40, 80),     # x=40 à 80
-        'Basse': (80, 0, 40, 80)        # x=80 à 120 (désormais Basse)
+        'Basse': (80, 0, 40, 80)        # x=80 à 120
     }
-
-    zone_colors = {
-        'Haute': '#FFD700',          # Or
-        'Médiane': '#98FB98',        # Vert
-        'Basse': '#87CEEB'           # Bleu
-    }
+    zone_colors = {'Haute': '#FFD700', 'Médiane': '#98FB98', 'Basse': '#87CEEB'}
 
     col_a, col_b = st.columns(2)
 
@@ -250,7 +364,7 @@ else:
         ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10)
         st.pyplot(fig_count)
 
-    # --- VISUALISATIONS PRINCIPALES ---
+    # ---- Visualisations principales ----
     st.markdown("---")
     st.subheader("Visualisations sur Terrain")
 
@@ -263,15 +377,15 @@ else:
     def get_event_colors(event_list, palette_name, base_colors_dict):
         if palette_name == 'Par défaut':
             cmap_for_others = cm.get_cmap('tab20', max(1, len(event_list)))
-            generated_colors = {event: mcolors.to_hex(cmap_for_others(i)) for i, event in enumerate([e for e in event_list if e not in base_colors_dict])}
-            return {**base_colors_dict, **generated_colors}
+            generated = {e: mcolors.to_hex(cmap_for_others(i)) for i, e in enumerate([x for x in event_list if x not in base_colors_dict])}
+            return {**base_colors_dict, **generated}
         else:
             try:
                 cmap_selected = cm.get_cmap(palette_name, max(1, len(event_list)))
-                return {event: mcolors.to_hex(cmap_selected(i)) for i, event in enumerate(event_list)}
+                return {e: mcolors.to_hex(cmap_selected(i)) for i, e in enumerate(event_list)}
             except ValueError:
                 cmap_fallback = cm.get_cmap('tab20', max(1, len(event_list)))
-                return {event: mcolors.to_hex(cmap_fallback(i)) for i, event in enumerate(event_list)}
+                return {e: mcolors.to_hex(cmap_fallback(i)) for i, e in enumerate(event_list)}
 
     event_colors = get_event_colors(event_options, color_palette_name, base_colors)
 
@@ -301,7 +415,6 @@ else:
             fig1.set_facecolor('white')
             st.pyplot(fig1)
 
-            # Légende dans la sidebar
             if show_legend:
                 with st.sidebar:
                     st.markdown("### 🎨 Légende des événements")
@@ -330,7 +443,7 @@ else:
 
     st.markdown("---")
 
-    # --- CARTES COMBINÉES PAR TYPE D'ÉVÉNEMENT ---
+    # ---- Cartes combinées ----
     if not df_event.empty:
         with st.expander("📊 Carte combinée par type d'événement", expanded=True):
             st.subheader("Carte combinée par type d'événement")
@@ -378,13 +491,11 @@ else:
                         combined_images.append((event_type, tmpfile.name))
                     plt.close(fig)
 
-# ======================================================================
-# 🎯 VISUALISATION DÉDIÉE — Tirs / Tir cadré / Tir non cadré (exclut le reste)
-# ======================================================================
+# ======================= VISU TIRS UNIQUEMENT =======================
 st.markdown("---")
 st.header("🎯 Tirs uniquement (Tir / Tir cadré / Tir non cadré)")
 
-# Synonymes FR/EN courants dans les CSV (les Events ont été .str.title() plus haut)
+# Synonymes FR/EN (les Events ont été .str.title() plus haut)
 SHOT_NAMES = {'Shot', 'Tir'}
 ON_TARGET_NAMES = {'Shot On Target', 'On Target', 'Tir Cadré', 'Tir Cadre', 'Goal', 'But'}
 OFF_TARGET_NAMES = {'Shot Off Target', 'Off Target', 'Tir Non Cadré', 'Tir Non Cadre'}
@@ -398,7 +509,7 @@ df_base = df_base[
     df_base.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1).isin(selected_zones)
 ]
 
-# Détermine les lignes de tirs (on accepte "Tir", "Tir cadré", "Goal/But", etc.)
+# Détermine les lignes de tirs
 is_shot_generic = df_base['Event'].isin(SHOT_NAMES)
 is_on_target = df_base['Event'].isin(ON_TARGET_NAMES)
 is_off_target = df_base['Event'].isin(OFF_TARGET_NAMES)
@@ -409,7 +520,6 @@ df_shots = df_base[is_shot_generic | is_on_target | is_off_target | is_goal].cop
 if df_shots.empty:
     st.info("Aucun tir trouvé avec les filtres actuels (équipes/joueurs/zones).")
 else:
-    # Normalise en trois catégories d'affichage
     def label_shot(e):
         if e in ON_TARGET_NAMES or e in {'Goal', 'But'}:
             return 'Tir cadré'
@@ -421,14 +531,12 @@ else:
 
     df_shots['TypeTir'] = df_shots['Event'].map(label_shot)
 
-    # Compteurs
     c_total = len(df_shots)
     c_on = (df_shots['TypeTir'] == 'Tir cadré').sum()
     c_off = (df_shots['TypeTir'] == 'Tir non cadré').sum()
     c_unk = (df_shots['TypeTir'] == 'Tir').sum()
     st.caption(f"Total tirs: {c_total} • Tir cadré: {c_on} • Tir non cadré: {c_off} • Non précisé: {c_unk}")
 
-    # Demi-terrain vertical, thème sombre
     vpitch = VerticalPitch(pitch_type='statsbomb', pitch_color='#22312b', line_color='#c7d5cc',
                            half=True, pad_top=2)
     fig_shots, axs_shots = vpitch.grid(endnote_height=0.03, endnote_space=0, figheight=12,
@@ -442,7 +550,7 @@ else:
         vpitch.scatter(df_goals['X'], df_goals['Y'], s=700, marker='football',
                        edgecolors='black', c='white', zorder=3, label='But', ax=axs_shots['pitch'])
 
-    # Tir cadré (hors "But")  ✅ parenthèses obligatoires avec & / ~
+    # Tir cadré (hors "But")  -> parenthèses obligatoires
     df_on = df_shots[(df_shots['TypeTir'] == 'Tir cadré') & (~df_shots['Event'].isin({'Goal', 'But'}))]
     if not df_on.empty:
         vpitch.scatter(df_on['X'], df_on['Y'], s=200, edgecolors='white', c='white', alpha=0.9,
@@ -454,13 +562,12 @@ else:
         vpitch.scatter(df_off['X'], df_off['Y'], s=200, edgecolors='white', facecolors='#22312b',
                        zorder=2, label='Tir non cadré', ax=axs_shots['pitch'])
 
-    # Tirs non précisés ("Tir" générique)
+    # Tirs non précisés
     df_unk = df_shots[df_shots['TypeTir'] == 'Tir']
     if not df_unk.empty:
         vpitch.scatter(df_unk['X'], df_unk['Y'], s=120, edgecolors='white', facecolors='#5d6d6a',
                        alpha=0.8, zorder=1, label='Tir (non précisé)', ax=axs_shots['pitch'])
 
-    # Titre + légende
     axs_shots['title'].text(0.5, 0.5, "Tirs (tous) — Vue demi-terrain",
                             color='#dee6ea', va='center', ha='center', fontsize=20, weight='bold')
     legend = axs_shots['pitch'].legend(facecolor='#22312b', edgecolor='None', loc='lower center', handlelength=2)
@@ -470,8 +577,7 @@ else:
 
     st.pyplot(fig_shots)
 
-
-# --- TÉLÉCHARGEMENT PDF ---
+# ======================= TÉLÉCHARGEMENT PDF =======================
 st.sidebar.markdown("---")
 if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
     with st.spinner("Génération du rapport PDF..."):
@@ -491,15 +597,9 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.ln(40)
             pdf.cell(0, 15, "Rapport de Visualisation Footballistique", ln=True, align='C')
             pdf.ln(10)
-            pdf.set_font("Arial", '', 14)
-            pdf.cell(0, 10, f"Équipes : {', '.join(selected_teams)}", ln=True, align='C')
-            pdf.ln(5)
-            pdf.cell(0, 10, f"Joueurs : {', '.join(selected_players)}", ln=True, align='C')
-            pdf.ln(5)
-            pdf.cell(0, 10, f"Zones : {', '.join(selected_zones)}", ln=True, align='C')
-            pdf.ln(5)
-            pdf.cell(0, 10, f"Événements analysés : {', '.join(displayed_events)}", ln=True, align='C')
-            add_footer()
+
+            # On peut ajouter quelques infos si désiré (équipes, joueurs, zones)
+            # (non requis, car le bloc e-mail est indépendant)
 
             # Pages analytiques générales (si dispos)
             if 'fig_zone' in locals() and 'fig_count' in locals():
@@ -549,7 +649,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 pdf.cell(terrain_width, 8, "Heatmap des événements", align='C')
                 add_footer()
 
-            # 🆕 Page Tirs (si existante)
+            # Page Tirs (si existante)
             if 'fig_shots' in locals():
                 with NamedTemporaryFile(delete=False, suffix=".png") as tmp_shots:
                     fig_shots.savefig(tmp_shots.name, bbox_inches='tight', dpi=200, facecolor='#22312b')
@@ -562,7 +662,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 pdf.image(tmp_shots.name, x=40, y=30, w=320)
                 add_footer()
 
-            # Cartes combinées (si dispos)
+            # Cartes combinées
             if 'combined_images' in locals() and combined_images:
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
