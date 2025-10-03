@@ -20,12 +20,20 @@ from fpdf import FPDF
 from tempfile import NamedTemporaryFile
 import base64
 
-# === PORTAIL D'ACCÈS OBLIGATOIRE & STOCKAGE PRIVÉ ===
-from datetime import datetime
+# === PORTAIL D'ACCÈS OBLIGATOIRE AVEC VÉRIFICATION D'EMAIL (MX + OTP) ===
+from datetime import datetime, timedelta
+import smtplib, ssl, random, string
+try:
+    import dns.resolver  # pip install dnspython
+except Exception:
+    dns = None  # si non dispo, on gérera proprement
 
 CONTACTS_PATH = os.path.join("data", "contacts.csv")
 os.makedirs(os.path.dirname(CONTACTS_PATH), exist_ok=True)
+
 EMAIL_REGEX = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+OTP_TTL_MINUTES = 10
+OTP_LENGTH = 6
 
 def load_contacts():
     if os.path.exists(CONTACTS_PATH):
@@ -36,29 +44,156 @@ def load_contacts():
     else:
         return pd.DataFrame(columns=["id","nom","prenom","email","email_sha256","created_at"])
 
-def save_contact(nom, prenom, email):
+def save_contact(nom: str, prenom: str, email: str):
     dfc = load_contacts()
     email_norm = email.strip().lower()
     email_hash = hashlib.sha256(email_norm.encode()).hexdigest()
 
-    # doublon par email (insensible casse)
+    # doublon par email (insensible à la casse)
     if not dfc[dfc["email"].str.lower() == email_norm].empty:
-        # déjà présent : on ne réécrit pas, on laisse passer
         return True, "Bienvenue à nouveau 👋", email_hash
 
     new_row = {
         "id": str(uuid.uuid4()),
         "nom": nom.strip(),
         "prenom": prenom.strip(),
-        "email": email_norm,                  # vous pouvez retirer cette colonne si vous ne voulez stocker que le hash
-        "email_sha256": email_hash,           # identifiant non réversible pour lier la session
+        "email": email_norm,                   # supprimez cette colonne si vous ne voulez garder que le hash
+        "email_sha256": email_hash,            # identifiant non réversible
         "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
     dfc = pd.concat([dfc, pd.DataFrame([new_row])], ignore_index=True)
     dfc.to_csv(CONTACTS_PATH, index=False)
     return True, "Coordonnées enregistrées ✅", email_hash
 
+def has_mx_record(email: str) -> bool:
+    """Vérifie qu'un enregistrement MX existe pour le domaine."""
+    try:
+        domain = email.split("@", 1)[1].strip()
+        if not domain:
+            return False
+        if dns is None:
+            # dnspython absent : on ne bloque pas, mais on conseille de l'installer
+            return True
+        answers = dns.resolver.resolve(domain, "MX")
+        return len(answers) > 0
+    except Exception:
+        return False
+
+def gen_otp(n: int = OTP_LENGTH) -> str:
+    return "".join(random.choices(string.digits, k=n))
+
+def send_otp_email(to_email: str, otp: str) -> tuple[bool, str]:
+    """
+    Envoie un OTP par SMTP (config via st.secrets). Retourne (ok, message).
+    Secrets attendus :
+      SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, APP_NAME (facultatif)
+    """
+    host = st.secrets.get("SMTP_HOST")
+    port = int(st.secrets.get("SMTP_PORT", 465))
+    user = st.secrets.get("SMTP_USER")
+    pwd  = st.secrets.get("SMTP_PASS")
+    from_addr = st.secrets.get("SMTP_FROM", user)
+    app_name = st.secrets.get("APP_NAME", "Votre application")
+
+    if not all([host, port, user, pwd, from_addr]):
+        return False, "Configuration SMTP manquante. Définissez SMTP_* dans st.secrets."
+
+    subject = f"[{app_name}] Votre code de vérification"
+    body = (
+        f"Bonjour,\n\n"
+        f"Voici votre code de vérification : {otp}\n"
+        f"Il expire dans {OTP_TTL_MINUTES} minutes.\n\n"
+        f"--\n{app_name}"
+    )
+    msg = f"From: {from_addr}\r\nTo: {to_email}\r\nSubject: {subject}\r\n\r\n{body}"
+
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, context=context) as server:
+            server.login(user, pwd)
+            server.sendmail(from_addr, [to_email], msg.encode("utf-8"))
+        return True, "Un code vous a été envoyé par email."
+    except Exception as e:
+        return False, f"Échec d'envoi du code : {e}"
+
+def start_otp_flow(nom: str, prenom: str, email: str):
+    """Démarre le flux OTP (génère, envoie, stocke en session)."""
+    otp = gen_otp()
+    st.session_state["pending_gate"] = {
+        "nom": nom.strip(),
+        "prenom": prenom.strip(),
+        "email": email.strip().lower(),
+        "otp": otp,
+        "otp_expires_at": (datetime.utcnow() + timedelta(minutes=OTP_TTL_MINUTES)).isoformat(),
+        "tries": 0
+    }
+    ok, msg = send_otp_email(email.strip(), otp)
+    if ok:
+        st.info(msg)
+    else:
+        st.error(msg)
+
+def render_otp_form():
+    """Affiche le formulaire de saisie OTP si un OTP est en attente."""
+    if "pending_gate" not in st.session_state:
+        return False
+
+    pending = st.session_state["pending_gate"]
+    expires_at = datetime.fromisoformat(pending["otp_expires_at"])
+    remaining = int((expires_at - datetime.utcnow()).total_seconds() // 60)
+
+    st.markdown("### ✉️ Vérification de votre email")
+    st.caption(f"Un code a été envoyé à **{pending['email']}**. Il expirera dans {remaining} minute(s).")
+
+    with st.form("otp_form", clear_on_submit=False):
+        otp_input = st.text_input("Code de vérification (6 chiffres) *", max_chars=OTP_LENGTH)
+        c1, c2 = st.columns([1,1])
+        with c1:
+            validate = st.form_submit_button("Valider")
+        with c2:
+            resend = st.form_submit_button("Renvoyer le code")
+
+    if resend:
+        # régénérer et renvoyer un nouveau code
+        start_otp_flow(pending["nom"], pending["prenom"], pending["email"])
+        st.stop()
+
+    if validate:
+        if datetime.utcnow() > expires_at:
+            st.error("Code expiré. Un nouveau code vous a été envoyé.")
+            start_otp_flow(pending["nom"], pending["prenom"], pending["email"])
+            st.stop()
+
+        if otp_input and otp_input.strip() == pending["otp"]:
+            # Vérification réussie -> on enregistre l'utilisateur et on ouvre l'accès
+            ok, msg, email_hash = save_contact(pending["nom"], pending["prenom"], pending["email"])
+            if ok:
+                st.session_state["gate_passed"] = True
+                st.session_state["user_email_hash"] = email_hash
+                st.session_state["username"] = f"{pending['prenom'].title()} {pending['nom'].upper()}"
+                # nettoyer l'OTP de la session
+                del st.session_state["pending_gate"]
+                st.success("Email vérifié ✅")
+                try:
+                    st.rerun()
+                except AttributeError:
+                    st.experimental_rerun()
+                st.stop()
+        else:
+            pending["tries"] += 1
+            st.error("Code invalide.")
+            if pending["tries"] >= 5:
+                st.warning("Trop d'essais. Un nouveau code a été envoyé.")
+                start_otp_flow(pending["nom"], pending["prenom"], pending["email"])
+            st.stop()
+
+    return True
+
 def require_user_gate():
+    # Si un OTP est en cours, afficher le formulaire OTP
+    if render_otp_form():
+        return
+
     st.markdown("## 🔐 Accès")
     with st.container():
         with st.form("gate_form", clear_on_submit=False):
@@ -74,7 +209,7 @@ def require_user_gate():
                 value=True
             )
 
-            submitted = st.form_submit_button("Continuer")
+            submitted = st.form_submit_button("Recevoir un code et continuer")
             if submitted:
                 if not nom or not prenom or not email:
                     st.error("Merci de remplir tous les champs obligatoires (*)")
@@ -82,30 +217,28 @@ def require_user_gate():
                     st.error("Adresse email invalide.")
                 elif not consent:
                     st.warning("Vous devez accepter pour continuer.")
+                elif not has_mx_record(email.strip()):
+                    st.error("Le domaine de l'email ne semble pas exister (MX introuvable).")
                 else:
-                    ok, msg, email_hash = save_contact(nom, prenom, email)
-                    if ok:
-                        st.session_state["gate_passed"] = True
-                        st.session_state["user_email_hash"] = email_hash
-                        st.session_state["username"] = f"{prenom.strip().title()} {nom.strip().upper()}"
-                        st.success(msg)
-                        st.experimental_rerun()
+                    # L'email ressemble à un vrai + MX OK => démarrer l'envoi du code
+                    start_otp_flow(nom, prenom, email)
+                    st.stop()
 
-# --- Exiger l'identification avant le contenu ---
+# --- Exiger l'identification avant tout le contenu ---
 if not st.session_state.get("gate_passed"):
     require_user_gate()
     st.stop()
 
 # === (Optionnel) EXPORT ADMIN SEULEMENT ===
-# Décommentez ce bloc si vous voulez pouvoir récupérer le CSV UNIQUEMENT avec une clé admin
 """
 with st.sidebar.expander("🔑 Zone admin", expanded=False):
     admin_key = st.text_input("Admin key", type="password")
-    expected = st.secrets.get("ADMIN_KEY", None)  # Définissez ADMIN_KEY dans .streamlit/secrets.toml
+    expected = st.secrets.get("ADMIN_KEY", None)
     if expected and admin_key == expected:
         dfc = load_contacts()
         csv_bytes = dfc.to_csv(index=False).encode("utf-8-sig")
         st.download_button("Télécharger contacts.csv", data=csv_bytes, file_name="contacts.csv", mime="text/csv")
+        st.caption(f"{len(dfc)} contact(s) enregistrés.")
     elif admin_key:
         st.error("Clé admin invalide.")
 """
