@@ -6,6 +6,7 @@ import time
 import os
 import hashlib
 import re
+
 # --- IMPORTS EXISTANTS (inchangés, à conserver) ---
 import streamlit as st
 import pandas as pd
@@ -19,84 +20,110 @@ from matplotlib.patches import Patch
 from fpdf import FPDF
 from tempfile import NamedTemporaryFile
 import base64
-
-# === PORTAIL D'ACCÈS OBLIGATOIRE AVEC VÉRIFICATION D'EMAIL (MX + OTP) ===
 from datetime import datetime, timedelta
-import smtplib, ssl, random, string
-try:
-    import dns.resolver  # pip install dnspython
-except Exception:
-    dns = None  # si non dispo, on gérera proprement
 
+# =========================================================
+# =============== CONFIG GÉNÉRALE & PAGE ==================
+# =========================================================
+st.set_page_config(page_title="Visualisation Foot", layout="wide")  # Appel unique, en tout début
+
+# Choisis le mode d'authentification : "simple" (par défaut) ou "otp"
+AUTH_MODE = "simple"   # "simple" | "otp"
+
+# Fichiers / constantes communes
 CONTACTS_PATH = os.path.join("data", "contacts.csv")
 os.makedirs(os.path.dirname(CONTACTS_PATH), exist_ok=True)
 
 EMAIL_REGEX = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
-OTP_TTL_MINUTES = 10
-OTP_LENGTH = 6
+DISPOSABLE_DOMAINS = {
+    "mailinator.com","10minutemail.com","10minutemail.net","10minutemail.co.uk",
+    "tempmail.com","tempmailo.com","tempmailaddress.com","guerrillamail.com",
+    "yopmail.com","trashmail.com","getnada.com","sharklasers.com",
+    "maildrop.cc","moakt.com","throwawaymail.com","dispostable.com"
+}
 
-def load_contacts():
+# Vérification MX (facultative si dnspython n'est pas installé)
+try:
+    import dns.resolver
+    _DNS_AVAILABLE = True
+except Exception:
+    _DNS_AVAILABLE = False
+
+def has_mx_record(email: str) -> bool:
+    try:
+        domain = email.split("@", 1)[1].strip().lower()
+        if not domain:
+            return False
+        if not _DNS_AVAILABLE:
+            return True  # si dnspython absent, on ne bloque pas
+        answers = dns.resolver.resolve(domain, "MX")
+        return len(answers) > 0
+    except Exception:
+        return False
+
+def load_contacts() -> pd.DataFrame:
+    cols = ["id","nom","prenom","email","email_sha256","created_at"]
     if os.path.exists(CONTACTS_PATH):
         try:
-            return pd.read_csv(CONTACTS_PATH, dtype=str)
+            dfc = pd.read_csv(CONTACTS_PATH, dtype=str)
+            for c in cols:
+                if c not in dfc.columns:
+                    dfc[c] = ""
+            return dfc[cols]
         except Exception:
-            return pd.DataFrame(columns=["id","nom","prenom","email","email_sha256","created_at"])
+            return pd.DataFrame(columns=cols)
     else:
-        return pd.DataFrame(columns=["id","nom","prenom","email","email_sha256","created_at"])
+        return pd.DataFrame(columns=cols)
 
 def save_contact(nom: str, prenom: str, email: str):
     dfc = load_contacts()
     email_norm = email.strip().lower()
     email_hash = hashlib.sha256(email_norm.encode()).hexdigest()
-
-    # doublon par email (insensible à la casse)
-    if not dfc[dfc["email"].str.lower() == email_norm].empty:
+    if "email" in dfc.columns and not dfc[dfc["email"].str.lower() == email_norm].empty:
         return True, "Bienvenue à nouveau 👋", email_hash
-
     new_row = {
         "id": str(uuid.uuid4()),
         "nom": nom.strip(),
         "prenom": prenom.strip(),
-        "email": email_norm,                   # supprimez cette colonne si vous ne voulez garder que le hash
-        "email_sha256": email_hash,            # identifiant non réversible
+        "email": email_norm,            # supprime cette clé si tu ne veux jamais stocker l'email en clair
+        "email_sha256": email_hash,     # identifiant non réversible
         "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
     dfc = pd.concat([dfc, pd.DataFrame([new_row])], ignore_index=True)
     dfc.to_csv(CONTACTS_PATH, index=False)
     return True, "Coordonnées enregistrées ✅", email_hash
 
-def has_mx_record(email: str) -> bool:
-    """Vérifie qu'un enregistrement MX existe pour le domaine."""
-    try:
-        domain = email.split("@", 1)[1].strip()
-        if not domain:
-            return False
-        if dns is None:
-            # dnspython absent : on ne bloque pas, mais on conseille de l'installer
-            return True
-        answers = dns.resolver.resolve(domain, "MX")
-        return len(answers) > 0
-    except Exception:
-        return False
+# =========================================================
+# ================== MODE OTP (optionnel) =================
+# =========================================================
+# Dépendances OTP optionnelles
+import socket, ssl, smtplib, json, random, string
+try:
+    import requests
+    _REQ_AVAILABLE = True
+except Exception:
+    _REQ_AVAILABLE = False
 
-def gen_otp(n: int = OTP_LENGTH) -> str:
+OTP_TTL_MINUTES = 10
+OTP_LENGTH = 6
+
+def _gen_otp(n: int = OTP_LENGTH) -> str:
     return "".join(random.choices(string.digits, k=n))
+
+def _resolve_host_or_msg(host: str) -> tuple[bool, str]:
+    try:
+        socket.getaddrinfo(host, None)
+        return True, ""
+    except Exception as e:
+        return False, f"Impossible de résoudre le nom d’hôte '{host}'. Erreur: {e}"
 
 def send_otp_email(to_email: str, otp: str) -> tuple[bool, str]:
     """
-    Envoie un OTP par SMTP (config via st.secrets). Retourne (ok, message).
-    Secrets attendus :
-      SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, APP_NAME (facultatif)
+    Backends via st.secrets['EMAIL_BACKEND'] : 'smtp' (défaut), 'sendgrid', 'mailgun'.
+    DEBUG_OTP=True : affiche l’OTP si l’envoi échoue.
     """
-    host = st.secrets.get("SMTP_HOST")
-    port = int(st.secrets.get("SMTP_PORT", 465))
-    user = st.secrets.get("SMTP_USER")
-    pwd  = st.secrets.get("SMTP_PASS")
-    from_addr = st.secrets.get("SMTP_FROM", user)
+    backend = (st.secrets.get("EMAIL_BACKEND") or "smtp").lower()
     app_name = st.secrets.get("APP_NAME", "Votre application")
-
-    if not all([host, port, user, pwd, from_addr]):
-        return False, "Configuration SMTP manquante. Définissez SMTP_* dans st.secrets."
 
     subject = f"[{app_name}] Votre code de vérification"
     body = (
@@ -105,20 +132,117 @@ def send_otp_email(to_email: str, otp: str) -> tuple[bool, str]:
         f"Il expire dans {OTP_TTL_MINUTES} minutes.\n\n"
         f"--\n{app_name}"
     )
-    msg = f"From: {from_addr}\r\nTo: {to_email}\r\nSubject: {subject}\r\n\r\n{body}"
 
-    try:
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=context) as server:
-            server.login(user, pwd)
-            server.sendmail(from_addr, [to_email], msg.encode("utf-8"))
-        return True, "Un code vous a été envoyé par email."
-    except Exception as e:
-        return False, f"Échec d'envoi du code : {e}"
+    # SMTP
+    if backend == "smtp":
+        host = st.secrets.get("SMTP_HOST")
+        port = int(st.secrets.get("SMTP_PORT", 465))
+        user = st.secrets.get("SMTP_USER")
+        pwd  = st.secrets.get("SMTP_PASS")
+        from_addr = st.secrets.get("SMTP_FROM", user)
+        security = (st.secrets.get("SMTP_SECURITY") or "SSL").upper()
+        missing = [k for k,v in {"SMTP_HOST":host,"SMTP_PORT":port,"SMTP_USER":user,"SMTP_PASS":pwd}.items() if not v]
+        if missing:
+            return False, f"Config SMTP incomplète (manque: {', '.join(missing)})."
+
+        ok_res, msg_res = _resolve_host_or_msg(host)
+        if not ok_res:
+            if st.secrets.get("DEBUG_OTP", False):
+                st.warning(f"[DEV] {msg_res} — OTP affiché ci-dessous.")
+                st.code(otp)
+                return True, "Mode DEV : OTP affiché (SMTP non résolu)."
+            return False, msg_res
+
+        msg_bytes = f"From: {from_addr}\r\nTo: {to_email}\r\nSubject: {subject}\r\n\r\n{body}".encode("utf-8")
+        try:
+            if security == "SSL":
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL(host, port, context=context, timeout=20) as server:
+                    server.login(user, pwd)
+                    server.sendmail(from_addr, [to_email], msg_bytes)
+            elif security == "STARTTLS":
+                with smtplib.SMTP(host, port, timeout=20) as server:
+                    server.ehlo(); server.starttls(context=ssl.create_default_context()); server.ehlo()
+                    server.login(user, pwd)
+                    server.sendmail(from_addr, [to_email], msg_bytes)
+            else:
+                with smtplib.SMTP(host, port, timeout=20) as server:
+                    server.login(user, pwd)
+                    server.sendmail(from_addr, [to_email], msg_bytes)
+            return True, "Un code vous a été envoyé par email."
+        except Exception as e:
+            if st.secrets.get("DEBUG_OTP", False):
+                st.warning(f"[DEV] Envoi SMTP impossible ({e}). OTP affiché ci-dessous.")
+                st.code(otp)
+                return True, "Mode DEV : OTP affiché (SMTP KO)."
+            return False, f"Échec d'envoi SMTP : {e}"
+
+    # SendGrid
+    if backend == "sendgrid":
+        if not _REQ_AVAILABLE:
+            return False, "SendGrid nécessite 'requests'."
+        api_key = st.secrets.get("SENDGRID_API_KEY")
+        from_addr = st.secrets.get("SMTP_FROM")
+        if not api_key or not from_addr:
+            return False, "Config SendGrid incomplète (SENDGRID_API_KEY, SMTP_FROM)."
+        url = "https://api.sendgrid.com/v3/mail/send"
+        payload = {
+            "personalizations": [{"to":[{"email": to_email}], "subject": subject}],
+            "from": {"email": from_addr},
+            "content": [{"type": "text/plain", "value": body}]
+        }
+        try:
+            r = requests.post(url, headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }, data=json.dumps(payload), timeout=20)
+            if 200 <= r.status_code < 300:
+                return True, "Un code vous a été envoyé par email."
+            else:
+                if st.secrets.get("DEBUG_OTP", False):
+                    st.warning(f"[DEV] SendGrid {r.status_code}: {r.text}. OTP affiché.")
+                    st.code(otp)
+                    return True, "Mode DEV : OTP affiché (SendGrid KO)."
+                return False, f"SendGrid {r.status_code}: {r.text}"
+        except Exception as e:
+            if st.secrets.get("DEBUG_OTP", False):
+                st.warning(f"[DEV] Envoi SendGrid impossible ({e}). OTP affiché.")
+                st.code(otp)
+                return True, "Mode DEV : OTP affiché (SendGrid KO)."
+            return False, f"Échec d'envoi via SendGrid : {e}"
+
+    # Mailgun
+    if backend == "mailgun":
+        if not _REQ_AVAILABLE:
+            return False, "Mailgun nécessite 'requests'."
+        domain = st.secrets.get("MAILGUN_DOMAIN")
+        api_key = st.secrets.get("MAILGUN_API_KEY")
+        from_addr = st.secrets.get("SMTP_FROM")
+        if not domain or not api_key or not from_addr:
+            return False, "Config Mailgun incomplète (MAILGUN_DOMAIN, MAILGUN_API_KEY, SMTP_FROM)."
+        url = f"https://api.mailgun.net/v3/{domain}/messages"
+        data = {"from": from_addr, "to": [to_email], "subject": subject, "text": body}
+        try:
+            r = requests.post(url, auth=("api", api_key), data=data, timeout=20)
+            if 200 <= r.status_code < 300:
+                return True, "Un code vous a été envoyé par email."
+            else:
+                if st.secrets.get("DEBUG_OTP", False):
+                    st.warning(f"[DEV] Mailgun {r.status_code}: {r.text}. OTP affiché.")
+                    st.code(otp)
+                    return True, "Mode DEV : OTP affiché (Mailgun KO)."
+                return False, f"Mailgun {r.status_code}: {r.text}"
+        except Exception as e:
+            if st.secrets.get("DEBUG_OTP", False):
+                st.warning(f"[DEV] Envoi Mailgun impossible ({e}). OTP affiché.")
+                st.code(otp)
+                return True, "Mode DEV : OTP affiché (Mailgun KO)."
+            return False, f"Échec d'envoi via Mailgun : {e}"
+
+    return False, f"EMAIL_BACKEND inconnu: {backend}. Utilise 'smtp', 'sendgrid' ou 'mailgun'."
 
 def start_otp_flow(nom: str, prenom: str, email: str):
-    """Démarre le flux OTP (génère, envoie, stocke en session)."""
-    otp = gen_otp()
+    otp = _gen_otp()
     st.session_state["pending_gate"] = {
         "nom": nom.strip(),
         "prenom": prenom.strip(),
@@ -132,46 +256,44 @@ def start_otp_flow(nom: str, prenom: str, email: str):
         st.info(msg)
     else:
         st.error(msg)
+        if st.secrets.get("DEBUG_OTP", False):
+            st.code(otp)
 
-def render_otp_form():
-    """Affiche le formulaire de saisie OTP si un OTP est en attente."""
+def render_otp_form() -> bool:
     if "pending_gate" not in st.session_state:
         return False
 
     pending = st.session_state["pending_gate"]
     expires_at = datetime.fromisoformat(pending["otp_expires_at"])
-    remaining = int((expires_at - datetime.utcnow()).total_seconds() // 60)
+    remaining = max(0, int((expires_at - datetime.utcnow()).total_seconds() // 60))
 
     st.markdown("### ✉️ Vérification de votre email")
     st.caption(f"Un code a été envoyé à **{pending['email']}**. Il expirera dans {remaining} minute(s).")
 
     with st.form("otp_form", clear_on_submit=False):
         otp_input = st.text_input("Code de vérification (6 chiffres) *", max_chars=OTP_LENGTH)
-        c1, c2 = st.columns([1,1])
+        c1, c2 = st.columns(2)
         with c1:
             validate = st.form_submit_button("Valider")
         with c2:
             resend = st.form_submit_button("Renvoyer le code")
 
     if resend:
-        # régénérer et renvoyer un nouveau code
         start_otp_flow(pending["nom"], pending["prenom"], pending["email"])
         st.stop()
 
     if validate:
         if datetime.utcnow() > expires_at:
-            st.error("Code expiré. Un nouveau code vous a été envoyé.")
+            st.error("Code expiré. Un nouveau code a été envoyé.")
             start_otp_flow(pending["nom"], pending["prenom"], pending["email"])
             st.stop()
 
         if otp_input and otp_input.strip() == pending["otp"]:
-            # Vérification réussie -> on enregistre l'utilisateur et on ouvre l'accès
             ok, msg, email_hash = save_contact(pending["nom"], pending["prenom"], pending["email"])
             if ok:
                 st.session_state["gate_passed"] = True
                 st.session_state["user_email_hash"] = email_hash
                 st.session_state["username"] = f"{pending['prenom'].title()} {pending['nom'].upper()}"
-                # nettoyer l'OTP de la session
                 del st.session_state["pending_gate"]
                 st.success("Email vérifié ✅")
                 try:
@@ -189,12 +311,16 @@ def render_otp_form():
 
     return True
 
+# =========================================================
+# =================== PORTAIL D’ACCÈS =====================
+# =========================================================
 def require_user_gate():
-    # Si un OTP est en cours, afficher le formulaire OTP
-    if render_otp_form():
+    st.markdown("## 🔐 Accès")
+
+    # Si OTP actif et un code est en cours → afficher le formulaire OTP
+    if AUTH_MODE == "otp" and render_otp_form():
         return
 
-    st.markdown("## 🔐 Accès")
     with st.container():
         with st.form("gate_form", clear_on_submit=False):
             col1, col2 = st.columns(2)
@@ -204,165 +330,47 @@ def require_user_gate():
                 prenom = st.text_input("Prénom *")
             email = st.text_input("Email *", placeholder="ex: nom@domaine.com")
 
-            consent = st.checkbox(
-                "J’accepte que mes informations (nom, prénom, email) soient utilisées pour personnaliser l’application.",
-                value=True
-            )
+            if AUTH_MODE == "otp":
+                consent = st.checkbox(
+                    "J’accepte que mes informations (nom, prénom, email) soient utilisées pour personnaliser l’application.",
+                    value=True
+                )
 
-            submitted = st.form_submit_button("Recevoir un code et continuer")
+            button_label = "Recevoir un code et continuer" if AUTH_MODE == "otp" else "Continuer"
+            submitted = st.form_submit_button(button_label)
+
             if submitted:
                 if not nom or not prenom or not email:
-                    st.error("Merci de remplir tous les champs obligatoires (*)")
-                elif not re.match(EMAIL_REGEX, email.strip()):
-                    st.error("Adresse email invalide.")
-                elif not consent:
-                    st.warning("Vous devez accepter pour continuer.")
-                elif not has_mx_record(email.strip()):
-                    st.error("Le domaine de l'email ne semble pas exister (MX introuvable).")
-                else:
-                    # L'email ressemble à un vrai + MX OK => démarrer l'envoi du code
-                    start_otp_flow(nom, prenom, email)
-                    st.stop()
+                    st.error("Merci de remplir tous les champs obligatoires (*)"); st.stop()
 
-# --- Exiger l'identification avant tout le contenu ---
-if not st.session_state.get("gate_passed"):
-    require_user_gate()
-    st.stop()
-
-# === (Optionnel) EXPORT ADMIN SEULEMENT ===
-"""
-with st.sidebar.expander("🔑 Zone admin", expanded=False):
-    admin_key = st.text_input("Admin key", type="password")
-    expected = st.secrets.get("ADMIN_KEY", None)
-    if expected and admin_key == expected:
-        dfc = load_contacts()
-        csv_bytes = dfc.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("Télécharger contacts.csv", data=csv_bytes, file_name="contacts.csv", mime="text/csv")
-        st.caption(f"{len(dfc)} contact(s) enregistrés.")
-    elif admin_key:
-        st.error("Clé admin invalide.")
-"""
-# === PORTAIL SIMPLE : FORMAT + MX + ANTI-DOMAINE JETABLE (SANS ENVOI D'EMAIL) ===
-from datetime import datetime
-try:
-    import dns.resolver  # facultatif : ajoute 'dnspython>=2.6' dans requirements.txt pour activer la vérification MX
-except Exception:
-    dns = None
-
-# Emplacement du fichier de contacts (privé)
-CONTACTS_PATH = os.path.join("data", "contacts.csv")
-os.makedirs(os.path.dirname(CONTACTS_PATH), exist_ok=True)
-
-# Validation de base du format email
-EMAIL_REGEX = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
-
-# Liste succincte de domaines jetables courants (tu peux en ajouter au besoin)
-DISPOSABLE_DOMAINS = {
-    "mailinator.com","10minutemail.com","10minutemail.net","10minutemail.co.uk",
-    "tempmail.com","tempmailo.com","tempmailaddress.com","guerrillamail.com",
-    "yopmail.com","trashmail.com","getnada.com","sharklasers.com",
-    "maildrop.cc","moakt.com","throwawaymail.com","dispostable.com"
-}
-
-def load_contacts() -> pd.DataFrame:
-    """Charge le CSV de contacts (ou initialise un DF propre)."""
-    cols = ["id","nom","prenom","email","email_sha256","created_at"]
-    if os.path.exists(CONTACTS_PATH):
-        try:
-            dfc = pd.read_csv(CONTACTS_PATH, dtype=str)
-            # s'assure des colonnes
-            for c in cols:
-                if c not in dfc.columns:
-                    dfc[c] = ""
-            return dfc[cols]
-        except Exception:
-            return pd.DataFrame(columns=cols)
-    else:
-        return pd.DataFrame(columns=cols)
-
-def save_contact(nom: str, prenom: str, email: str):
-    """Ajoute l'utilisateur si nouveau (doublon sur email), sinon laisse passer."""
-    dfc = load_contacts()
-    email_norm = email.strip().lower()
-    email_hash = hashlib.sha256(email_norm.encode()).hexdigest()
-
-    if "email" in dfc.columns and not dfc[dfc["email"].str.lower() == email_norm].empty:
-        return True, "Bienvenue à nouveau 👋", email_hash
-
-    new_row = {
-        "id": str(uuid.uuid4()),
-        "nom": nom.strip(),
-        "prenom": prenom.strip(),
-        "email": email_norm,            # supprime cette clé si tu ne veux jamais stocker l'email en clair
-        "email_sha256": email_hash,     # identifiant non réversible
-        "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    dfc = pd.concat([dfc, pd.DataFrame([new_row])], ignore_index=True)
-    dfc.to_csv(CONTACTS_PATH, index=False)
-    return True, "Coordonnées enregistrées ✅", email_hash
-
-def has_mx_record(email: str) -> bool:
-    """Vérifie qu'un enregistrement MX existe pour le domaine de l'email."""
-    try:
-        domain = email.split("@", 1)[1].strip().lower()
-        if not domain:
-            return False
-        if dns is None:
-            # Si dnspython n'est pas installé, on ne bloque pas (tu peux durcir en retournant False ici si tu préfères)
-            return True
-        answers = dns.resolver.resolve(domain, "MX")
-        return len(answers) > 0
-    except Exception:
-        return False
-
-def require_user_gate():
-    """Affiche le portail et bloque l'app tant que l'utilisateur n'est pas identifié."""
-    st.markdown("## 🔐 Accès")
-    with st.container():
-        with st.form("gate_form", clear_on_submit=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                nom = st.text_input("Nom *")
-            with col2:
-                prenom = st.text_input("Prénom *")
-            email = st.text_input("Email *", placeholder="ex: nom@domaine.com")
-
-            submitted = st.form_submit_button("Continuer")
-            if submitted:
-                # 1) champs requis
-                if not nom or not prenom or not email:
-                    st.error("Merci de remplir tous les champs obligatoires (*)")
-                    st.stop()
-
-                # 2) format email
                 email_norm = email.strip().lower()
                 if not re.match(EMAIL_REGEX, email_norm):
-                    st.error("Adresse email invalide.")
-                    st.stop()
+                    st.error("Adresse email invalide."); st.stop()
 
-                # 3) anti-domaine jetable
                 domain = email_norm.split("@", 1)[1]
                 if domain in DISPOSABLE_DOMAINS:
-                    st.error("Les emails jetables ne sont pas autorisés.")
-                    st.stop()
+                    st.error("Les emails jetables ne sont pas autorisés."); st.stop()
 
-                # 4) MX du domaine (si dnspython installé)
                 if not has_mx_record(email_norm):
-                    st.error("Le domaine de l'email ne semble pas exister (MX introuvable).")
-                    st.stop()
+                    st.error("Le domaine de l'email ne semble pas exister (MX introuvable)."); st.stop()
 
-                # 5) OK → enregistrement + accès
-                ok, msg, email_hash = save_contact(nom, prenom, email_norm)
-                if ok:
-                    st.session_state["gate_passed"] = True
-                    st.session_state["user_email_hash"] = email_hash
-                    st.session_state["username"] = f"{prenom.strip().title()} {nom.strip().upper()}"
-                    st.success(msg)
-                    try:
-                        st.rerun()  # Streamlit récents
-                    except AttributeError:
-                        st.experimental_rerun()  # fallback anciennes versions
+                if AUTH_MODE == "otp":
+                    if not consent:
+                        st.warning("Vous devez accepter pour continuer."); st.stop()
+                    start_otp_flow(nom, prenom, email_norm)
                     st.stop()
+                else:
+                    ok, msg, email_hash = save_contact(nom, prenom, email_norm)
+                    if ok:
+                        st.session_state["gate_passed"] = True
+                        st.session_state["user_email_hash"] = email_hash
+                        st.session_state["username"] = f"{prenom.strip().title()} {nom.strip().upper()}"
+                        st.success(msg)
+                        try:
+                            st.rerun()
+                        except AttributeError:
+                            st.experimental_rerun()
+                        st.stop()
 
 # 🔒 Bloquer l'accès tant que non identifié
 if not st.session_state.get("gate_passed"):
@@ -373,7 +381,7 @@ if not st.session_state.get("gate_passed"):
 """
 with st.sidebar.expander("🔑 Zone admin (privée)", expanded=False):
     admin_key = st.text_input("Admin key", type="password")
-    expected = st.secrets.get("ADMIN_KEY", None)  # définis ADMIN_KEY dans .streamlit/secrets.toml
+    expected = st.secrets.get("ADMIN_KEY", None)
     if expected and admin_key == expected:
         dfc = load_contacts()
         st.download_button(
@@ -387,12 +395,12 @@ with st.sidebar.expander("🔑 Zone admin (privée)", expanded=False):
         st.error("Clé admin invalide.")
 """
 
-# --- PAGE PRINCIPALE ---
+# =========================================================
+# ===================== PAGE PRINCIPALE ===================
+# =========================================================
 if 'username' in st.session_state:
-    st.set_page_config(page_title=f"Visualisation Foot - {st.session_state['username']}", layout="wide")
     st.title(f"⚽ Outil de Visualisation de Données Footballistiques - Bienvenue, {st.session_state['username']} !")
 else:
-    st.set_page_config(page_title="Visualisation Foot", layout="wide")
     st.title("Outil de Visualisation de Données Footballistiques")
 
 # --- UPLOAD CSV ---
@@ -468,14 +476,8 @@ displayed_events = st.sidebar.multiselect(
     default=["Pass"] if "Pass" in event_options else event_options[:1]
 )
 
-# --- ✅ CORRECTION : CLASSIFICATION EN 3 ZONES (Haute/Basse inversées) ---
+# --- CLASSIFICATION EN 3 ZONES ---
 def classify_zone(x, y):
-    """
-    Classification en 3 zones :
-    - Haute : x < 40 (désormais zone côté gauche/défensive)
-    - Médiane : 40 <= x <= 80
-    - Basse : x > 80 (désormais zone côté droit/offensive)
-    """
     if x < 40:
         return 'Haute'
     elif x <= 80:
@@ -483,7 +485,6 @@ def classify_zone(x, y):
     else:
         return 'Basse'
 
-# --- Ajout temporaire pour le filtre ---
 df['Zone_temp'] = df.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1)
 zone_options = sorted(df['Zone_temp'].dropna().unique())
 del df['Zone_temp']
@@ -514,13 +515,13 @@ PALETTE_OPTIONS = {
 display_names_list = list(PALETTE_OPTIONS.keys())
 
 with st.sidebar.expander("➕ Options Avancées"):
-    arrow_width = st.slider("Épaisseur des flèches", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
-    arrow_head_scale = st.slider("Taille de la tête des flèches", min_value=1.0, max_value=10.0, value=2.0, step=0.5)
-    arrow_alpha = st.slider("Opacité des flèches", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
-    point_size = st.slider("Taille des points", min_value=20, max_value=200, value=80, step=10)
-    scatter_alpha = st.slider("Opacité des points", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
-    heatmap_alpha = st.slider("Opacité de la heatmap", min_value=0.1, max_value=1.0, value=0.85, step=0.05)
-    heatmap_statistic = st.selectbox("Type de statistique", options=['count', 'density'], index=0)
+    arrow_width = st.slider("Épaisseur des flèches", 0.5, 5.0, 2.0, 0.5)
+    arrow_head_scale = st.slider("Taille de la tête des flèches", 1.0, 10.0, 2.0, 0.5)
+    arrow_alpha = st.slider("Opacité des flèches", 0.1, 1.0, 0.8, 0.1)
+    point_size = st.slider("Taille des points", 20, 200, 80, 10)
+    scatter_alpha = st.slider("Opacité des points", 0.1, 1.0, 0.8, 0.1)
+    heatmap_alpha = st.slider("Opacité de la heatmap", 0.1, 1.0, 0.85, 0.05)
+    heatmap_statistic = st.selectbox("Type de statistique", ['count', 'density'], index=0)
     show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True)
     hide_zero_percent_labels = st.checkbox("Masquer les labels 0%", value=True)
     selected_palette_display_name = st.selectbox("Palette de couleurs", options=display_names_list, index=0)
@@ -557,7 +558,7 @@ total_events = zone_total['Total'].sum()
 zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
 st.dataframe(zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"}))
 
-# --- VISUALISATIONS PAR ZONES (3 ZONES SEULEMENT) ---
+# --- VISUALISATIONS PAR ZONES ---
 st.markdown("---")
 st.header("Visualisations sur Terrain - Analyse par Zones")
 
@@ -569,17 +570,16 @@ common_pitch_params = {
 }
 fig_size = (8, 5.5)
 
-# ✅ RECTANGLES CORRIGÉS : 3 zones, Haute/Basse inversées pour correspondre à la classification
 zones_rects = {
-    'Haute': (0, 0, 40, 80),        # x=0 à 40   (désormais Haute)
-    'Médiane': (40, 0, 40, 80),     # x=40 à 80
-    'Basse': (80, 0, 40, 80)        # x=80 à 120 (désormais Basse)
+    'Haute': (0, 0, 40, 80),
+    'Médiane': (40, 0, 40, 80),
+    'Basse': (80, 0, 40, 80)
 }
 
 zone_colors = {
-    'Haute': '#FFD700',          # Or
-    'Médiane': '#98FB98',        # Vert
-    'Basse': '#87CEEB'           # Bleu
+    'Haute': '#FFD700',
+    'Médiane': '#98FB98',
+    'Basse': '#87CEEB'
 }
 
 col_a, col_b = st.columns(2)
@@ -665,7 +665,6 @@ with col1:
         fig1.set_facecolor('white')
         st.pyplot(fig1)
 
-        # Légende dans la sidebar
         if show_legend:
             with st.sidebar:
                 st.markdown("### 🎨 Légende des événements")
@@ -819,7 +818,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.cell(terrain_width, 8, "Heatmap des événements", align='C')
             add_footer()
 
-            if combined_images:
+            if 'combined_images' in locals() and combined_images:
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
                 pdf.cell(0, 12, "Cartes Combinées par Type d'Événement", ln=True, align='C')
@@ -854,7 +853,13 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 os.unlink(tmp_pdf.name)
 
         finally:
-            for f in temp_files + [img for _, img in combined_images]:
+            if 'combined_images' in locals():
+                for _, img in combined_images:
+                    try:
+                        os.unlink(img)
+                    except:
+                        pass
+            for f in temp_files:
                 try:
                     os.unlink(f)
                 except:
