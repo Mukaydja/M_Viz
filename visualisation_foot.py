@@ -20,6 +20,95 @@ from fpdf import FPDF
 from tempfile import NamedTemporaryFile
 import base64
 
+# === PORTAIL D'ACCÈS OBLIGATOIRE & STOCKAGE PRIVÉ ===
+from datetime import datetime
+
+CONTACTS_PATH = os.path.join("data", "contacts.csv")
+os.makedirs(os.path.dirname(CONTACTS_PATH), exist_ok=True)
+EMAIL_REGEX = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
+
+def load_contacts():
+    if os.path.exists(CONTACTS_PATH):
+        try:
+            return pd.read_csv(CONTACTS_PATH, dtype=str)
+        except Exception:
+            return pd.DataFrame(columns=["id","nom","prenom","email","email_sha256","created_at"])
+    else:
+        return pd.DataFrame(columns=["id","nom","prenom","email","email_sha256","created_at"])
+
+def save_contact(nom, prenom, email):
+    dfc = load_contacts()
+    email_norm = email.strip().lower()
+    email_hash = hashlib.sha256(email_norm.encode()).hexdigest()
+
+    # doublon par email (insensible casse)
+    if not dfc[dfc["email"].str.lower() == email_norm].empty:
+        # déjà présent : on ne réécrit pas, on laisse passer
+        return True, "Bienvenue à nouveau 👋", email_hash
+
+    new_row = {
+        "id": str(uuid.uuid4()),
+        "nom": nom.strip(),
+        "prenom": prenom.strip(),
+        "email": email_norm,                  # vous pouvez retirer cette colonne si vous ne voulez stocker que le hash
+        "email_sha256": email_hash,           # identifiant non réversible pour lier la session
+        "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    dfc = pd.concat([dfc, pd.DataFrame([new_row])], ignore_index=True)
+    dfc.to_csv(CONTACTS_PATH, index=False)
+    return True, "Coordonnées enregistrées ✅", email_hash
+
+def require_user_gate():
+    st.markdown("## 🔐 Accès")
+    with st.container():
+        with st.form("gate_form", clear_on_submit=False):
+            col1, col2 = st.columns(2)
+            with col1:
+                nom = st.text_input("Nom *")
+            with col2:
+                prenom = st.text_input("Prénom *")
+            email = st.text_input("Email *", placeholder="ex: nom@domaine.com")
+
+            consent = st.checkbox(
+                "J’accepte que mes informations (nom, prénom, email) soient utilisées pour personnaliser l’application.",
+                value=True
+            )
+
+            submitted = st.form_submit_button("Continuer")
+            if submitted:
+                if not nom or not prenom or not email:
+                    st.error("Merci de remplir tous les champs obligatoires (*)")
+                elif not re.match(EMAIL_REGEX, email.strip()):
+                    st.error("Adresse email invalide.")
+                elif not consent:
+                    st.warning("Vous devez accepter pour continuer.")
+                else:
+                    ok, msg, email_hash = save_contact(nom, prenom, email)
+                    if ok:
+                        st.session_state["gate_passed"] = True
+                        st.session_state["user_email_hash"] = email_hash
+                        st.session_state["username"] = f"{prenom.strip().title()} {nom.strip().upper()}"
+                        st.success(msg)
+                        st.experimental_rerun()
+
+# --- Exiger l'identification avant le contenu ---
+if not st.session_state.get("gate_passed"):
+    require_user_gate()
+    st.stop()
+
+# === (Optionnel) EXPORT ADMIN SEULEMENT ===
+# Décommentez ce bloc si vous voulez pouvoir récupérer le CSV UNIQUEMENT avec une clé admin
+"""
+with st.sidebar.expander("🔑 Zone admin", expanded=False):
+    admin_key = st.text_input("Admin key", type="password")
+    expected = st.secrets.get("ADMIN_KEY", None)  # Définissez ADMIN_KEY dans .streamlit/secrets.toml
+    if expected and admin_key == expected:
+        dfc = load_contacts()
+        csv_bytes = dfc.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("Télécharger contacts.csv", data=csv_bytes, file_name="contacts.csv", mime="text/csv")
+    elif admin_key:
+        st.error("Clé admin invalide.")
+"""
 
 # --- PAGE PRINCIPALE ---
 if 'username' in st.session_state:
