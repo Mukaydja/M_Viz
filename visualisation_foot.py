@@ -242,19 +242,21 @@ with st.sidebar.expander("🔑 Zone admin", expanded=False):
     elif admin_key:
         st.error("Clé admin invalide.")
 """
-# === PORTAIL SIMPLE : FORMAT + MX + ANTI-DOMAINE JETABLE, SANS EMAIL ===
+# === PORTAIL SIMPLE : FORMAT + MX + ANTI-DOMAINE JETABLE (SANS ENVOI D'EMAIL) ===
 from datetime import datetime
 try:
-    import dns.resolver  # pip install dnspython
+    import dns.resolver  # facultatif : ajoute 'dnspython>=2.6' dans requirements.txt pour activer la vérification MX
 except Exception:
     dns = None
 
+# Emplacement du fichier de contacts (privé)
 CONTACTS_PATH = os.path.join("data", "contacts.csv")
 os.makedirs(os.path.dirname(CONTACTS_PATH), exist_ok=True)
 
+# Validation de base du format email
 EMAIL_REGEX = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
 
-# Petit blocage des domaines jetables courants
+# Liste succincte de domaines jetables courants (tu peux en ajouter au besoin)
 DISPOSABLE_DOMAINS = {
     "mailinator.com","10minutemail.com","10minutemail.net","10minutemail.co.uk",
     "tempmail.com","tempmailo.com","tempmailaddress.com","guerrillamail.com",
@@ -262,27 +264,36 @@ DISPOSABLE_DOMAINS = {
     "maildrop.cc","moakt.com","throwawaymail.com","dispostable.com"
 }
 
-def load_contacts():
+def load_contacts() -> pd.DataFrame:
+    """Charge le CSV de contacts (ou initialise un DF propre)."""
+    cols = ["id","nom","prenom","email","email_sha256","created_at"]
     if os.path.exists(CONTACTS_PATH):
         try:
-            return pd.read_csv(CONTACTS_PATH, dtype=str)
+            dfc = pd.read_csv(CONTACTS_PATH, dtype=str)
+            # s'assure des colonnes
+            for c in cols:
+                if c not in dfc.columns:
+                    dfc[c] = ""
+            return dfc[cols]
         except Exception:
-            return pd.DataFrame(columns=["id","nom","prenom","email","email_sha256","created_at"])
+            return pd.DataFrame(columns=cols)
     else:
-        return pd.DataFrame(columns=["id","nom","prenom","email","email_sha256","created_at"])
+        return pd.DataFrame(columns=cols)
 
 def save_contact(nom: str, prenom: str, email: str):
+    """Ajoute l'utilisateur si nouveau (doublon sur email), sinon laisse passer."""
     dfc = load_contacts()
     email_norm = email.strip().lower()
     email_hash = hashlib.sha256(email_norm.encode()).hexdigest()
-    # doublon email
+
     if "email" in dfc.columns and not dfc[dfc["email"].str.lower() == email_norm].empty:
         return True, "Bienvenue à nouveau 👋", email_hash
+
     new_row = {
         "id": str(uuid.uuid4()),
         "nom": nom.strip(),
         "prenom": prenom.strip(),
-        "email": email_norm,            # supprimez cette colonne si vous ne voulez garder que le hash
+        "email": email_norm,            # supprime cette clé si tu ne veux jamais stocker l'email en clair
         "email_sha256": email_hash,     # identifiant non réversible
         "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     }
@@ -291,13 +302,13 @@ def save_contact(nom: str, prenom: str, email: str):
     return True, "Coordonnées enregistrées ✅", email_hash
 
 def has_mx_record(email: str) -> bool:
-    """Vérifie qu'un enregistrement MX existe pour le domaine (domaine réel)."""
+    """Vérifie qu'un enregistrement MX existe pour le domaine de l'email."""
     try:
         domain = email.split("@", 1)[1].strip().lower()
         if not domain:
             return False
         if dns is None:
-            # dnspython non installé : on ne bloque pas, mais on recommande de l’installer pour renforcer le contrôle
+            # Si dnspython n'est pas installé, on ne bloque pas (tu peux durcir en retournant False ici si tu préfères)
             return True
         answers = dns.resolver.resolve(domain, "MX")
         return len(answers) > 0
@@ -305,6 +316,7 @@ def has_mx_record(email: str) -> bool:
         return False
 
 def require_user_gate():
+    """Affiche le portail et bloque l'app tant que l'utilisateur n'est pas identifié."""
     st.markdown("## 🔐 Accès")
     with st.container():
         with st.form("gate_form", clear_on_submit=False):
@@ -322,9 +334,8 @@ def require_user_gate():
                     st.error("Merci de remplir tous les champs obligatoires (*)")
                     st.stop()
 
-                email_norm = email.strip().lower()
-
                 # 2) format email
+                email_norm = email.strip().lower()
                 if not re.match(EMAIL_REGEX, email_norm):
                     st.error("Adresse email invalide.")
                     st.stop()
@@ -335,12 +346,12 @@ def require_user_gate():
                     st.error("Les emails jetables ne sont pas autorisés.")
                     st.stop()
 
-                # 4) MX du domaine (vrai domaine)
+                # 4) MX du domaine (si dnspython installé)
                 if not has_mx_record(email_norm):
                     st.error("Le domaine de l'email ne semble pas exister (MX introuvable).")
                     st.stop()
 
-                # OK → enregistrement + accès
+                # 5) OK → enregistrement + accès
                 ok, msg, email_hash = save_contact(nom, prenom, email_norm)
                 if ok:
                     st.session_state["gate_passed"] = True
@@ -348,16 +359,33 @@ def require_user_gate():
                     st.session_state["username"] = f"{prenom.strip().title()} {nom.strip().upper()}"
                     st.success(msg)
                     try:
-                        st.rerun()  # versions récentes
+                        st.rerun()  # Streamlit récents
                     except AttributeError:
-                        st.experimental_rerun()  # fallback
+                        st.experimental_rerun()  # fallback anciennes versions
                     st.stop()
 
-# --- Exiger l'identification avant tout le contenu ---
+# 🔒 Bloquer l'accès tant que non identifié
 if not st.session_state.get("gate_passed"):
     require_user_gate()
     st.stop()
 
+# (Optionnel) Zone admin d'export CSV — à décommenter si tu veux te garder une porte d'export privée
+"""
+with st.sidebar.expander("🔑 Zone admin (privée)", expanded=False):
+    admin_key = st.text_input("Admin key", type="password")
+    expected = st.secrets.get("ADMIN_KEY", None)  # définis ADMIN_KEY dans .streamlit/secrets.toml
+    if expected and admin_key == expected:
+        dfc = load_contacts()
+        st.download_button(
+            "Télécharger contacts.csv",
+            data=dfc.to_csv(index=False).encode("utf-8-sig"),
+            file_name="contacts.csv",
+            mime="text/csv"
+        )
+        st.caption(f"{len(dfc)} contact(s) enregistrés.")
+    elif admin_key:
+        st.error("Clé admin invalide.")
+"""
 
 # --- PAGE PRINCIPALE ---
 if 'username' in st.session_state:
