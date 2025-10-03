@@ -13,3 +13,12 @@ matplotlib
 pandas
 numpy
 xlsxwriter
+streamlit
+pandas
+numpy
+matplotlib
+mplsoccer
+fpdf
+dnspython  # optionnel
+requests   # optionnel (pour OTP)
+streamlit-cookies-manager
