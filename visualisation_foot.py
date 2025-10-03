@@ -1,4 +1,4 @@
-# am-fcp.py
+# am-fcp.py — version robuste (Google Sheets auto + fallback CSV)
 # ======================= IMPORTS =======================
 import os
 import re
@@ -25,31 +25,56 @@ import matplotlib.colors as mcolors
 from fpdf import FPDF
 from tempfile import NamedTemporaryFile
 
-# DNS (validation MX – optionnel mais recommandé)
+# DNS (validation MX – optionnel)
 try:
     import dns.resolver  # pip install dnspython
     _HAS_DNSPYTHON = True
 except Exception:
     _HAS_DNSPYTHON = False
 
-# Google Sheets
-# pip install gspread google-auth
-import gspread
-from google.oauth2.service_account import Credentials
+# Google Sheets (optionnel)
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    _HAS_GSPREAD = True
+except Exception:
+    _HAS_GSPREAD = False
 
 
 # ======================= CONFIG / CONSTANTES =======================
-SPREADSHEET_ID = "10ymrP1mAGDI-f1U6ShY7MxTx5zuF_QCqlMC7z6DLFp0"  # ton Google Sheet
-FORM_SHEET_NAME = "Formulaire"                                    # onglet cible
-REQUIRED_HEADERS = ["Nom", "Prénom", "Email"]                     # entêtes attendues
+SPREADSHEET_ID = "10ymrP1mAGDI-f1U6ShY7MxTx5zuF_QCqlMC7z6DLFp0"
+FORM_SHEET_NAME = "Formulaire"
+REQUIRED_HEADERS = ["Nom", "Prénom", "Email"]
 
 EMAIL_REGEX = re.compile(
     r"^(?P<local>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+)@(?P<domain>[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)$"
 )
 
-# ======================= FONCTIONS GOOGLE SHEETS =======================
+# Fallback local
+LOCAL_DIR = "data"
+LOCAL_CSV = os.path.join(LOCAL_DIR, "formulaire.csv")
+os.makedirs(LOCAL_DIR, exist_ok=True)
+
+def _has_gs_config() -> bool:
+    """Vrai si gspread dispo + secret gcp_service_account présent et bien formé."""
+    if not _HAS_GSPREAD:
+        return False
+    try:
+        _ = st.secrets["gcp_service_account"]
+        # vérif champs minimaux
+        required = {"type","client_email","private_key","token_uri"}
+        return required.issubset(set(_.keys()))
+    except Exception:
+        return False
+
+USE_GOOGLE_SHEETS = _has_gs_config()
+
+
+# ======================= GOOGLE SHEETS HELPERS (avec fallback) =======================
 @st.cache_resource(show_spinner=False)
 def get_gs_client():
+    if not USE_GOOGLE_SHEETS:
+        return None
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -58,37 +83,41 @@ def get_gs_client():
     return gspread.authorize(creds)
 
 def ensure_formulaire_worksheet_first():
-    """
-    Retourne l'onglet 'Formulaire'.
-    - Le crée si absent, avec l'entête Nom | Prénom | Email.
-    - Le déplace en première position du fichier.
-    """
+    """Retourne l'onglet 'Formulaire' (créé + placé en 1er si besoin)."""
+    if not USE_GOOGLE_SHEETS:
+        return None
     gc = get_gs_client()
     sh = gc.open_by_key(SPREADSHEET_ID)
-
     try:
         ws = sh.worksheet(FORM_SHEET_NAME)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=FORM_SHEET_NAME, rows=1000, cols=10)
         ws.update("A1:C1", [REQUIRED_HEADERS])
-
-    # Assure l'entête si feuille existante mais vide
-    first_row = ws.row_values(1)
-    if not first_row:
+    # entête si vide
+    if not ws.row_values(1):
         ws.update("A1:C1", [REQUIRED_HEADERS])
-
-    # Mettre l'onglet en premier si nécessaire
+    # en première position
     worksheets = sh.worksheets()
-    if worksheets[0].id != ws.id:
-        # place 'Formulaire' en première position
+    if worksheets and worksheets[0].id != ws.id:
         new_order = [ws] + [w for w in worksheets if w.id != ws.id]
         sh.reorder_worksheets(new_order)
-
     return ws
 
 def append_row_to_formulaire(nom: str, prenom: str, email: str):
-    ws = ensure_formulaire_worksheet_first()
-    ws.append_row([nom, prenom, email], value_input_option="RAW")
+    """
+    Si Google Sheets OK => écrit dans l’onglet Formulaire.
+    Sinon => écrit dans data/formulaire.csv (avec Timestamp).
+    """
+    if USE_GOOGLE_SHEETS:
+        ws = ensure_formulaire_worksheet_first()
+        ws.append_row([nom, prenom, email], value_input_option="RAW")
+    else:
+        new_file = not os.path.exists(LOCAL_CSV)
+        with open(LOCAL_CSV, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f, delimiter=";")
+            if new_file:
+                w.writerow(REQUIRED_HEADERS + ["Timestamp"])
+            w.writerow([nom, prenom, email, datetime.utcnow().isoformat()])
 
 
 # ======================= VALIDATION EMAIL =======================
@@ -104,7 +133,6 @@ def domain_has_mx(domain: str) -> bool:
             answers = dns.resolver.resolve(domain, "MX")
             return len(answers) > 0
         except Exception:
-            # Fallback A/AAAA : certains domaines n'exposent pas MX mais résolvent quand même
             for rr in ("A", "AAAA"):
                 try:
                     dns.resolver.resolve(domain, rr)
@@ -112,11 +140,10 @@ def domain_has_mx(domain: str) -> bool:
                 except Exception:
                     continue
             return False
-    # Si dnspython absent : on accepte après syntaxe (sinon return False pour durcir)
-    return True
+    return True  # si dnspython absent, on reste permissif
 
 
-# ======================= GARDE D’ENTRÉE (ONGLET FORMULAIRE) =======================
+# ======================= GARDE D’ENTRÉE (FORMULAIRE OBLIGATOIRE) =======================
 if "gate_ok" not in st.session_state:
     st.session_state["gate_ok"] = False
 
@@ -134,7 +161,12 @@ if not st.session_state["gate_ok"]:
         if not _HAS_DNSPYTHON:
             st.caption("ℹ️ Vérification MX limitée (dnspython non installé).")
 
-    consent = st.checkbox("J’autorise le stockage de ces informations dans le fichier Google Sheet (onglet 'Formulaire').")
+    if not USE_GOOGLE_SHEETS:
+        st.info("ℹ️ Le secret `gcp_service_account` est absent ou invalide : "
+                "les enregistrements seront stockés en local dans `data/formulaire.csv` "
+                "jusqu’à configuration de Google Sheets.")
+
+    consent = st.checkbox("J’autorise le stockage de ces informations (Formulaire).")
     submit = st.button("Entrer")
 
     if submit:
@@ -158,7 +190,7 @@ if not st.session_state["gate_ok"]:
         try:
             append_row_to_formulaire(nom.strip().title(), prenom.strip().title(), email.strip().lower())
         except Exception as e:
-            st.error(f"Impossible d’enregistrer dans le Google Sheet : {e}")
+            st.error(f"Impossible d’enregistrer les informations : {e}")
             st.stop()
 
         st.success("✅ Informations enregistrées. Accès autorisé.")
@@ -169,12 +201,8 @@ if not st.session_state["gate_ok"]:
 
 
 # ======================= PAGE PRINCIPALE =======================
-if 'username' in st.session_state:
-    st.set_page_config(page_title=f"Visualisation Foot - {st.session_state['username']}", layout="wide")
-    st.title(f"⚽ Outil de Visualisation de Données Footballistiques - Bienvenue, {st.session_state['username']} !")
-else:
-    st.set_page_config(page_title="Visualisation Foot", layout="wide")
-    st.title("Outil de Visualisation de Données Footballistiques")
+st.set_page_config(page_title="Visualisation Foot", layout="wide")
+st.title("Outil de Visualisation de Données Footballistiques")
 
 # ======================= UPLOAD CSV =======================
 st.sidebar.header("📁 Données")
@@ -226,13 +254,8 @@ if pd.notna(max_coord) and max_coord <= 105 and max_coord > 50:
 df['Team'] = df['Team'].fillna('AS Monaco').astype(str).str.strip().str.title()
 df['Player'] = df['Player'].fillna('').astype(str).str.strip().str.title()
 df['Event'] = (
-    df['Event']
-    .fillna('')
-    .astype(str)
-    .str.strip()
-    .str.lower()
-    .str.replace(r'\s+', ' ', regex=True)
-    .str.title()
+    df['Event'].fillna('').astype(str).str.strip().str.lower()
+      .str.replace(r'\s+', ' ', regex=True).str.title()
 )
 
 # ======================= FILTRES =======================
@@ -251,12 +274,6 @@ displayed_events = st.sidebar.multiselect(
 
 # ======================= ZONES (inversion Haute/Basse) =======================
 def classify_zone(x, y):
-    """
-    Classification en 3 zones :
-    - Haute : x < 40
-    - Médiane : 40 <= x <= 80
-    - Basse : x > 80
-    """
     if x < 40:
         return 'Haute'
     elif x <= 80:
@@ -269,9 +286,7 @@ zone_options = sorted(df['Zone_temp'].dropna().unique())
 del df['Zone_temp']
 
 selected_zones = st.sidebar.multiselect(
-    "Zones du Terrain",
-    options=zone_options,
-    default=zone_options,
+    "Zones du Terrain", options=zone_options, default=zone_options,
     help="Filtrer les événements par zone où ils ont eu lieu."
 )
 
@@ -294,16 +309,16 @@ PALETTE_OPTIONS = {
 display_names_list = list(PALETTE_OPTIONS.keys())
 
 with st.sidebar.expander("➕ Options Avancées"):
-    arrow_width = st.slider("Épaisseur des flèches", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
-    arrow_head_scale = st.slider("Taille de la tête des flèches", min_value=1.0, max_value=10.0, value=2.0, step=0.5)
-    arrow_alpha = st.slider("Opacité des flèches", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
-    point_size = st.slider("Taille des points", min_value=20, max_value=200, value=80, step=10)
-    scatter_alpha = st.slider("Opacité des points", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
-    heatmap_alpha = st.slider("Opacité de la heatmap", min_value=0.1, max_value=1.0, value=0.85, step=0.05)
-    heatmap_statistic = st.selectbox("Type de statistique", options=['count', 'density'], index=0)
+    arrow_width = st.slider("Épaisseur des flèches", 0.5, 5.0, 2.0, 0.5)
+    arrow_head_scale = st.slider("Taille de la tête des flèches", 1.0, 10.0, 2.0, 0.5)
+    arrow_alpha = st.slider("Opacité des flèches", 0.1, 1.0, 0.8, 0.1)
+    point_size = st.slider("Taille des points", 20, 200, 80, 10)
+    scatter_alpha = st.slider("Opacité des points", 0.1, 1.0, 0.8, 0.1)
+    heatmap_alpha = st.slider("Opacité de la heatmap", 0.1, 1.0, 0.85, 0.05)
+    heatmap_statistic = st.selectbox("Type de statistique", ['count', 'density'], index=0)
     show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True)
     hide_zero_percent_labels = st.checkbox("Masquer les labels 0%", value=True)
-    selected_palette_display_name = st.selectbox("Palette de couleurs", options=display_names_list, index=0)
+    selected_palette_display_name = st.selectbox("Palette de couleurs", list(PALETTE_OPTIONS.keys()), index=0)
     color_palette_name = PALETTE_OPTIONS[selected_palette_display_name]
 
 # ======================= APPLICATION DES FILTRES GÉNÉRAUX =======================
@@ -323,7 +338,7 @@ if df_event.empty:
     st.warning("Aucun événement ne correspond aux filtres sélectionnés (section générale). "
                "Les visualisations de tirs restent disponibles plus bas.")
 else:
-    # ---- Tableaux ----
+    # Tableaux
     st.header("Quantité d'Événements par Type et Zone")
     zone_counts = df_event.groupby(['Event', 'Zone']).size().unstack(fill_value=0)
     zone_counts['Total'] = zone_counts.sum(axis=1)
@@ -337,34 +352,28 @@ else:
     zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
     st.dataframe(zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"}))
 
-    # ---- Analyse par zones ----
+    # Analyse par zones
     st.markdown("---")
     st.header("Visualisations sur Terrain - Analyse par Zones")
 
     common_pitch_params = {'pitch_color': 'white', 'line_color': 'black', 'linewidth': 1, 'line_zorder': 2}
     fig_size = (8, 5.5)
 
-    zones_rects = {
-        'Haute': (0, 0, 40, 80),        # x=0 à 40
-        'Médiane': (40, 0, 40, 80),     # x=40 à 80
-        'Basse': (80, 0, 40, 80)        # x=80 à 120
-    }
+    zones_rects = {'Haute': (0,0,40,80), 'Médiane': (40,0,40,80), 'Basse': (80,0,40,80)}
     zone_colors = {'Haute': '#FFD700', 'Médiane': '#98FB98', 'Basse': '#87CEEB'}
 
     col_a, col_b = st.columns(2)
-
     with col_a:
         pitch_zone = Pitch(**common_pitch_params)
         fig_zone, ax_zone = pitch_zone.draw(figsize=fig_size)
         fig_zone.set_facecolor('white')
         zone_percents = df_event['Zone'].value_counts(normalize=True).to_dict()
-        for zone, (x, y, w, h) in zones_rects.items():
-            percent = zone_percents.get(zone, 0)
-            rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black',
-                                 facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
+        for zone,(x,y,w,h) in zones_rects.items():
+            rect = plt.Rectangle((x,y),w,h, linewidth=1.5, edgecolor='black',
+                                 facecolor=zone_colors.get(zone,'#DDDDDD'), alpha=0.7)
             ax_zone.add_patch(rect)
-            ax_zone.text(x + w/2, y + h/2, f"{zone}\n{percent*100:.1f}%", ha='center', va='center',
-                         fontsize=8, weight='bold')
+            p = zone_percents.get(zone,0)*100
+            ax_zone.text(x+w/2, y+h/2, f"{zone}\n{p:.1f}%", ha='center', va='center', fontsize=8, weight='bold')
         ax_zone.set_title("Répartition en Pourcentages", fontsize=12, weight='bold', pad=10)
         st.pyplot(fig_zone)
 
@@ -372,42 +381,37 @@ else:
         pitch_count = Pitch(**common_pitch_params)
         fig_count, ax_count = pitch_count.draw(figsize=fig_size)
         fig_count.set_facecolor('white')
-        zone_counts_dict = df_event['Zone'].value_counts().to_dict()
-        for zone, (x, y, w, h) in zones_rects.items():
-            count = zone_counts_dict.get(zone, 0)
-            rect = plt.Rectangle((x, y), w, h, linewidth=1.5, edgecolor='black',
-                                 facecolor=zone_colors.get(zone, '#DDDDDD'), alpha=0.7)
+        zc = df_event['Zone'].value_counts().to_dict()
+        for zone,(x,y,w,h) in zones_rects.items():
+            rect = plt.Rectangle((x,y),w,h, linewidth=1.5, edgecolor='black',
+                                 facecolor=zone_colors.get(zone,'#DDDDDD'), alpha=0.7)
             ax_count.add_patch(rect)
-            ax_count.text(x + w/2, y + h/2, f"{zone}\n{count} evt", ha='center', va='center',
-                          fontsize=8, weight='bold')
+            c = zc.get(zone,0)
+            ax_count.text(x+w/2, y+h/2, f"{zone}\n{c} evt", ha='center', va='center', fontsize=8, weight='bold')
         ax_count.set_title("Nombre d'Événements", fontsize=12, weight='bold', pad=10)
         st.pyplot(fig_count)
 
-    # ---- Visualisations principales ----
+    # Visus principales
     st.markdown("---")
     st.subheader("Visualisations sur Terrain")
 
-    base_colors = {
-        'Shot': '#FF4B4B', 'Pass': '#6C9AC3', 'Dribble': '#FFA500',
-        'Cross': '#92c952', 'Tackle': '#A52A2A', 'Interception': '#FFD700',
-        'Clearance': '#00CED1'
-    }
+    base_colors = {'Shot':'#FF4B4B','Pass':'#6C9AC3','Dribble':'#FFA500',
+                   'Cross':'#92c952','Tackle':'#A52A2A','Interception':'#FFD700',
+                   'Clearance':'#00CED1'}
 
     def get_event_colors(event_list, palette_name, base_colors_dict):
         if palette_name == 'Par défaut':
-            cmap_for_others = cm.get_cmap('tab20', max(1, len(event_list)))
-            generated = {e: mcolors.to_hex(cmap_for_others(i)) for i, e in enumerate([x for x in event_list if x not in base_colors_dict])}
-            return {**base_colors_dict, **generated}
-        else:
-            try:
-                cmap_selected = cm.get_cmap(palette_name, max(1, len(event_list)))
-                return {e: mcolors.to_hex(cmap_selected(i)) for i, e in enumerate(event_list)}
-            except ValueError:
-                cmap_fallback = cm.get_cmap('tab20', max(1, len(event_list)))
-                return {e: mcolors.to_hex(cmap_fallback(i)) for i, e in enumerate(event_list)}
+            cmap = cm.get_cmap('tab20', max(1, len(event_list)))
+            gen = {e: mcolors.to_hex(cmap(i)) for i,e in enumerate([x for x in event_list if x not in base_colors_dict])}
+            return {**base_colors_dict, **gen}
+        try:
+            cmap = cm.get_cmap(palette_name, max(1, len(event_list)))
+            return {e: mcolors.to_hex(cmap(i)) for i,e in enumerate(event_list)}
+        except ValueError:
+            cmap = cm.get_cmap('tab20', max(1, len(event_list)))
+            return {e: mcolors.to_hex(cmap(i)) for i,e in enumerate(event_list)}
 
     event_colors = get_event_colors(event_options, color_palette_name, base_colors)
-
     col1, col2 = st.columns(2)
 
     with col1:
@@ -417,19 +421,15 @@ else:
             for event_type in displayed_events:
                 event_data = df_event[df_event['Event'] == event_type]
                 color = event_colors.get(event_type, '#333333')
-                has_xy2 = event_data[['X2', 'Y2']].notna().all(axis=1)
+                has_xy2 = event_data[['X2','Y2']].notna().all(axis=1)
                 if has_xy2.any():
-                    pitch.arrows(
-                        event_data[has_xy2]['X'], event_data[has_xy2]['Y'],
-                        event_data[has_xy2]['X2'], event_data[has_xy2]['Y2'],
-                        color=color, width=arrow_width, headwidth=3 * arrow_head_scale,
-                        headlength=2 * arrow_head_scale, alpha=arrow_alpha, ax=ax1
-                    )
+                    pitch.arrows(event_data[has_xy2]['X'], event_data[has_xy2]['Y'],
+                                 event_data[has_xy2]['X2'], event_data[has_xy2]['Y2'],
+                                 color=color, width=arrow_width, headwidth=3*arrow_head_scale,
+                                 headlength=2*arrow_head_scale, alpha=arrow_alpha, ax=ax1)
                 if (~has_xy2).any():
-                    pitch.scatter(
-                        event_data[~has_xy2]['X'], event_data[~has_xy2]['Y'],
-                        ax=ax1, fc=color, ec='black', lw=0.5, s=point_size, alpha=scatter_alpha
-                    )
+                    pitch.scatter(event_data[~has_xy2]['X'], event_data[~has_xy2]['Y'],
+                                  ax=ax1, fc=color, ec='black', lw=0.5, s=point_size, alpha=scatter_alpha)
             ax1.set_title("Visualisation des Événements", fontsize=12, weight='bold')
             fig1.set_facecolor('white')
             st.pyplot(fig1)
@@ -448,25 +448,21 @@ else:
             fig2.set_facecolor('white')
             df_hm = df_event if len(displayed_events) != 1 else df_event[df_event['Event'] == displayed_events[0]]
             if not df_hm.empty:
-                bin_statistic = pitch.bin_statistic(
-                    df_hm['X'], df_hm['Y'], statistic=heatmap_statistic, bins=(6, 5), normalize=True
-                )
+                bin_statistic = pitch.bin_statistic(df_hm['X'], df_hm['Y'], statistic=heatmap_statistic, bins=(6,5), normalize=True)
                 pitch.heatmap(bin_statistic, ax=ax2, cmap='Reds', edgecolor='white', alpha=heatmap_alpha)
                 if show_heatmap_labels:
-                    pitch.label_heatmap(
-                        bin_statistic, ax=ax2, str_format='{:.0%}', fontsize=12,
-                        ha='center', va='center', exclude_zeros=hide_zero_percent_labels, color='black'
-                    )
+                    pitch.label_heatmap(bin_statistic, ax=ax2, str_format='{:.0%}', fontsize=12,
+                                        ha='center', va='center', exclude_zeros=hide_zero_percent_labels, color='black')
             ax2.set_title("Heatmap des Événements", fontsize=12, weight='bold')
             st.pyplot(fig2)
 
     st.markdown("---")
 
-    # ---- Cartes combinées ----
+    # Cartes combinées
     if not df_event.empty:
         with st.expander("📊 Carte combinée par type d'événement", expanded=True):
             st.subheader("Carte combinée par type d'événement")
-            grouped = [displayed_events[i:i + 3] for i in range(0, len(displayed_events), 3)]
+            grouped = [displayed_events[i:i+3] for i in range(0, len(displayed_events), 3)]
             combined_images = []
             for group in grouped:
                 row = st.container().columns(len(group))
@@ -478,30 +474,22 @@ else:
                     color = event_colors.get(event_type, '#333333')
                     pitch = Pitch(pitch_color='white', line_color='black', line_zorder=2)
                     fig, ax = pitch.draw(figsize=(6, 4))
-                    arrows_data = df_type[df_type[['X2', 'Y2']].notna().all(axis=1)]
+                    arrows_data = df_type[df_type[['X2','Y2']].notna().all(axis=1)]
                     if not arrows_data.empty:
-                        pitch.arrows(
-                            arrows_data['X'], arrows_data['Y'],
-                            arrows_data['X2'], arrows_data['Y2'],
-                            ax=ax, zorder=10, color=color, alpha=arrow_alpha, width=arrow_width,
-                            headwidth=3 * arrow_head_scale, headlength=2 * arrow_head_scale
-                        )
-                    points_data = df_type[df_type[['X2', 'Y2']].isna().any(axis=1)]
+                        pitch.arrows(arrows_data['X'], arrows_data['Y'], arrows_data['X2'], arrows_data['Y2'],
+                                     ax=ax, zorder=10, color=color, alpha=arrow_alpha, width=arrow_width,
+                                     headwidth=3*arrow_head_scale, headlength=2*arrow_head_scale)
+                    points_data = df_type[df_type[['X2','Y2']].isna().any(axis=1)]
                     if not points_data.empty:
-                        pitch.scatter(
-                            points_data['X'], points_data['Y'], ax=ax,
-                            fc=color, marker='o', s=point_size, ec='black', lw=1,
-                            alpha=scatter_alpha, zorder=5
-                        )
-                    bin_stat = pitch.bin_statistic(df_type['X'], df_type['Y'], bins=(6, 5), normalize=True)
-                    event_cmaps = ['Reds', 'Blues', 'Greens', 'Purples', 'Oranges', 'Greys', 'YlGnBu', 'PuRd']
-                    cmap_name = event_cmaps[i % len(event_cmaps)]
-                    pitch.heatmap(bin_stat, ax=ax, cmap=cmap_name, edgecolor='white', alpha=heatmap_alpha)
+                        pitch.scatter(points_data['X'], points_data['Y'], ax=ax, fc=color, marker='o',
+                                      s=point_size, ec='black', lw=1, alpha=scatter_alpha, zorder=5)
+                    bin_stat = pitch.bin_statistic(df_type['X'], df_type['Y'], bins=(6,5), normalize=True)
+                    event_cmaps = ['Reds','Blues','Greens','Purples','Oranges','Greys','YlGnBu','PuRd']
+                    pitch.heatmap(bin_stat, ax=ax, cmap=event_cmaps[i % len(event_cmaps)],
+                                  edgecolor='white', alpha=heatmap_alpha)
                     if show_heatmap_labels:
-                        pitch.label_heatmap(
-                            bin_stat, ax=ax, str_format='{:.0%}', fontsize=10,
-                            ha='center', va='center', exclude_zeros=hide_zero_percent_labels, color='black'
-                        )
+                        pitch.label_heatmap(bin_stat, ax=ax, str_format='{:.0%}', fontsize=10,
+                                            ha='center', va='center', exclude_zeros=hide_zero_percent_labels, color='black')
                     ax.set_title(event_type, color='black', fontsize=12, weight='bold')
                     fig.set_facecolor('white')
                     row[i].pyplot(fig)
@@ -514,25 +502,17 @@ else:
 st.markdown("---")
 st.header("🎯 Tirs uniquement (Tir / Tir cadré / Tir non cadré)")
 
-# Synonymes FR/EN (les Events ont été .str.title() plus haut)
 SHOT_NAMES = {'Shot', 'Tir'}
 ON_TARGET_NAMES = {'Shot On Target', 'On Target', 'Tir Cadré', 'Tir Cadre', 'Goal', 'But'}
 OFF_TARGET_NAMES = {'Shot Off Target', 'Off Target', 'Tir Non Cadré', 'Tir Non Cadre'}
 
-# Filtre indépendant de 'displayed_events' : on garde Équipes / Joueurs / Zones
-df_base = df[
-    df['Team'].isin(selected_teams) &
-    df['Player'].isin(selected_players)
-]
-df_base = df_base[
-    df_base.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1).isin(selected_zones)
-]
+df_base = df[df['Team'].isin(selected_teams) & df['Player'].isin(selected_players)]
+df_base = df_base[df_base.apply(lambda r: classify_zone(r['X'], r['Y']), axis=1).isin(selected_zones)]
 
-# Détermine les lignes de tirs
 is_shot_generic = df_base['Event'].isin(SHOT_NAMES)
 is_on_target = df_base['Event'].isin(ON_TARGET_NAMES)
 is_off_target = df_base['Event'].isin(OFF_TARGET_NAMES)
-is_goal = df_base['Event'].isin({'Goal', 'But'})  # pour l’icône "ballon"
+is_goal = df_base['Event'].isin({'Goal', 'But'})
 
 df_shots = df_base[is_shot_generic | is_on_target | is_off_target | is_goal].copy()
 
@@ -547,7 +527,6 @@ else:
         if e in SHOT_NAMES:
             return 'Tir'
         return 'Autre'
-
     df_shots['TypeTir'] = df_shots['Event'].map(label_shot)
 
     c_total = len(df_shots)
@@ -559,29 +538,24 @@ else:
     vpitch = VerticalPitch(pitch_type='statsbomb', pitch_color='#22312b', line_color='#c7d5cc',
                            half=True, pad_top=2)
     fig_shots, axs_shots = vpitch.grid(endnote_height=0.03, endnote_space=0, figheight=12,
-                                       title_height=0.08, title_space=0, axis=False,
-                                       grid_height=0.82)
+                                       title_height=0.08, title_space=0, axis=False, grid_height=0.82)
     fig_shots.set_facecolor('#22312b')
 
-    # Buts
     df_goals = df_shots[df_shots['Event'].isin({'Goal', 'But'})]
     if not df_goals.empty:
         vpitch.scatter(df_goals['X'], df_goals['Y'], s=700, marker='football',
                        edgecolors='black', c='white', zorder=3, label='But', ax=axs_shots['pitch'])
 
-    # Tir cadré (hors "But")
     df_on = df_shots[(df_shots['TypeTir'] == 'Tir cadré') & (~df_shots['Event'].isin({'Goal', 'But'}))]
     if not df_on.empty:
         vpitch.scatter(df_on['X'], df_on['Y'], s=200, edgecolors='white', c='white', alpha=0.9,
                        zorder=2, label='Tir cadré', ax=axs_shots['pitch'])
 
-    # Tir non cadré
     df_off = df_shots[df_shots['TypeTir'] == 'Tir non cadré']
     if not df_off.empty:
         vpitch.scatter(df_off['X'], df_off['Y'], s=200, edgecolors='white', facecolors='#22312b',
                        zorder=2, label='Tir non cadré', ax=axs_shots['pitch'])
 
-    # Tirs non précisés
     df_unk = df_shots[df_shots['TypeTir'] == 'Tir']
     if not df_unk.empty:
         vpitch.scatter(df_unk['X'], df_unk['Y'], s=120, edgecolors='white', facecolors='#5d6d6a',
@@ -610,27 +584,23 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
 
         temp_files = []
         try:
-            # Page de garde
             pdf.add_page()
             pdf.set_font("Arial", 'B', 24)
             pdf.ln(40)
             pdf.cell(0, 15, "Rapport de Visualisation Footballistique", ln=True, align='C')
             pdf.ln(10)
 
-            # Pages analytiques générales (si dispos)
             if 'fig_zone' in locals() and 'fig_count' in locals():
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
                 pdf.cell(0, 12, "Analyse par Zones du Terrain", ln=True, align='C')
                 pdf.ln(8)
-
                 with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_pct:
                     fig_zone.savefig(tmp_zone_pct.name, bbox_inches='tight', dpi=200, facecolor='white')
                     temp_files.append(tmp_zone_pct.name)
                 with NamedTemporaryFile(delete=False, suffix=".png") as tmp_zone_count:
                     fig_count.savefig(tmp_zone_count.name, bbox_inches='tight', dpi=200, facecolor='white')
                     temp_files.append(tmp_zone_count.name)
-
                 terrain_y = 60
                 pdf.image(tmp_zone_pct.name, x=50, y=terrain_y, w=140, h=90)
                 pdf.image(tmp_zone_count.name, x=220, y=terrain_y, w=140, h=90)
@@ -646,31 +616,26 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 pdf.set_font("Arial", 'B', 18)
                 pdf.cell(0, 12, "Visualisations sur Terrain", ln=True, align='C')
                 pdf.ln(10)
-
                 with NamedTemporaryFile(delete=False, suffix=".png") as tmp_fig1:
                     fig1.savefig(tmp_fig1.name, bbox_inches='tight', dpi=200, facecolor='white')
                     temp_files.append(tmp_fig1.name)
                 with NamedTemporaryFile(delete=False, suffix=".png") as tmp_fig2:
                     fig2.savefig(tmp_fig2.name, bbox_inches='tight', dpi=200, facecolor='white')
                     temp_files.append(tmp_fig2.name)
-
                 terrain_width = 180
                 terrain_height = 120
                 pdf.image(tmp_fig1.name, x=30, y=40, w=terrain_width, h=terrain_height)
                 pdf.image(tmp_fig2.name, x=230, y=40, w=terrain_width, h=terrain_height)
-                pdf.set_xy(30, 165)
-                pdf.set_font("Arial", 'B', 12)
+                pdf.set_xy(30, 165); pdf.set_font("Arial", 'B', 12)
                 pdf.cell(terrain_width, 8, "Événements sur le terrain", align='C')
                 pdf.set_xy(230, 165)
                 pdf.cell(terrain_width, 8, "Heatmap des événements", align='C')
                 add_footer()
 
-            # Page Tirs (si existante)
             if 'fig_shots' in locals():
                 with NamedTemporaryFile(delete=False, suffix=".png") as tmp_shots:
                     fig_shots.savefig(tmp_shots.name, bbox_inches='tight', dpi=200, facecolor='#22312b')
                     temp_files.append(tmp_shots.name)
-
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
                 pdf.cell(0, 12, "Tirs — Vue demi-terrain", ln=True, align='C')
@@ -678,22 +643,16 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 pdf.image(tmp_shots.name, x=40, y=30, w=320)
                 add_footer()
 
-            # Cartes combinées
             if 'combined_images' in locals() and combined_images:
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
                 pdf.cell(0, 12, "Cartes Combinées par Type d'Événement", ln=True, align='C')
                 pdf.ln(10)
-                img_width = 120
-                img_height = 80
-                margin_x = 30
-                margin_y = 40
-                cols = 3
-                spacing_x = 15
-                spacing_y = 20
+                img_width, img_height = 120, 80
+                margin_x, margin_y = 30, 40
+                cols, spacing_x, spacing_y = 3, 15, 20
                 for i, (event_type, img_path) in enumerate(combined_images[:6]):
-                    col = i % cols
-                    row = i // cols
+                    col = i % cols; row = i // cols
                     x = margin_x + col * (img_width + spacing_x)
                     y = margin_y + row * (img_height + spacing_y)
                     pdf.image(img_path, x=x, y=y, w=img_width, h=img_height)
@@ -705,17 +664,13 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
                 pdf.output(tmp_pdf.name)
                 with open(tmp_pdf.name, "rb") as file:
-                    st.download_button(
-                        "📄 Télécharger le PDF final du rapport",
-                        data=file.read(),
-                        file_name="rapport_foot_A3.pdf",
-                        mime="application/pdf"
-                    )
+                    st.download_button("📄 Télécharger le PDF final du rapport",
+                                       data=file.read(),
+                                       file_name="rapport_foot_A3.pdf",
+                                       mime="application/pdf")
                 os.unlink(tmp_pdf.name)
 
         finally:
             for f in temp_files + ([img for _, img in combined_images] if 'combined_images' in locals() else []):
-                try:
-                    os.unlink(f)
-                except:
-                    pass
+                try: os.unlink(f)
+                except: pass
