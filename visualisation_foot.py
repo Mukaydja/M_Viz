@@ -377,31 +377,75 @@ if not st.session_state.get("gate_passed"):
     require_user_gate()
     st.stop()
 
-# (Optionnel) Zone admin d'export CSV — à décommenter si tu veux te garder une porte d'export privée
-"""
-with st.sidebar.expander("🔑 Zone admin (privée)", expanded=False):
+# --- ADMIN : Consulter / Exporter les contacts (protégé) ---
+with st.sidebar.expander("🔑 Contacts (admin)", expanded=False):
+    # Saisie de la clé admin (à définir dans st.secrets)
     admin_key = st.text_input("Admin key", type="password")
-    expected = st.secrets.get("ADMIN_KEY", None)
+    expected = st.secrets.get("ADMIN_KEY", None)  # Ex.: ADMIN_KEY="ta-cle-ultra-secrete" dans .streamlit/secrets.toml
+
     if expected and admin_key == expected:
-        dfc = load_contacts()
+        try:
+            dfc = load_contacts().copy()
+        except Exception as e:
+            st.error(f"Impossible de charger les contacts : {e}")
+            dfc = pd.DataFrame(columns=["created_at","prenom","nom","email","email_sha256","id"])
+
+        # Tri du plus récent au plus ancien si la colonne existe
+        if "created_at" in dfc.columns:
+            dfc["created_at"] = pd.to_datetime(dfc["created_at"], errors="coerce")
+            dfc = dfc.sort_values("created_at", ascending=False)
+
+        # Masquer les emails par défaut (option pour afficher en clair)
+        st.write(f"👥 {len(dfc)} contact(s) enregistré(s)")
+        show_full = st.checkbox("Afficher les emails complets", value=False)
+        df_view = dfc.copy()
+        if "email" in df_view.columns and not show_full:
+            df_view["email"] = df_view["email"].fillna("").str.replace(
+                r"(^.).+(@.+$)", r"\1***\2", regex=True
+            )
+
+        # Colonnes affichées (ajuste si besoin)
+        cols_to_show = [c for c in ["created_at","prenom","nom","email"] if c in df_view.columns]
+        st.dataframe(df_view[cols_to_show], use_container_width=True)
+
+        # Filtre date (optionnel mais pratique)
+        with st.popover("🗓️ Filtrer par date (optionnel)"):
+            min_d, max_d = None, None
+            if "created_at" in dfc.columns and not dfc["created_at"].isna().all():
+                min_d = pd.to_datetime(dfc["created_at"]).min().date()
+                max_d = pd.to_datetime(dfc["created_at"]).max().date()
+            if min_d and max_d:
+                d1, d2 = st.date_input("Intervalle", (min_d, max_d))
+                if isinstance(d1, pd.Timestamp): d1 = d1.date()
+                if isinstance(d2, pd.Timestamp): d2 = d2.date()
+                if d1 and d2:
+                    mask = (pd.to_datetime(dfc["created_at"]).dt.date >= d1) & (pd.to_datetime(dfc["created_at"]).dt.date <= d2)
+                    dfc_filtered = dfc.loc[mask].copy()
+                else:
+                    dfc_filtered = dfc
+            else:
+                dfc_filtered = dfc
+
+            # Export filtré
+            st.download_button(
+                "📥 Télécharger (CSV, filtré si dates)",
+                data=dfc_filtered.to_csv(index=False).encode("utf-8-sig"),
+                file_name="contacts.csv",
+                mime="text/csv"
+            )
+
+        # Export complet (sans filtre)
         st.download_button(
-            "Télécharger contacts.csv",
+            "⬇️ Télécharger (CSV complet)",
             data=dfc.to_csv(index=False).encode("utf-8-sig"),
-            file_name="contacts.csv",
+            file_name="contacts_complet.csv",
             mime="text/csv"
         )
-        st.caption(f"{len(dfc)} contact(s) enregistrés.")
+
+        st.caption("Astuce : les emails sont masqués par défaut. Coche l’option pour les voir en clair.")
+
     elif admin_key:
         st.error("Clé admin invalide.")
-"""
-
-# =========================================================
-# ===================== PAGE PRINCIPALE ===================
-# =========================================================
-if 'username' in st.session_state:
-    st.title(f"⚽ Outil de Visualisation de Données Footballistiques - Bienvenue, {st.session_state['username']} !")
-else:
-    st.title("Outil de Visualisation de Données Footballistiques")
 
 # --- UPLOAD CSV ---
 st.sidebar.header("📁 Données")
