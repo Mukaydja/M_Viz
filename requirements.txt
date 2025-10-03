@@ -22,3 +22,12 @@ fpdf
 dnspython  # optionnel
 requests   # optionnel (pour OTP)
 streamlit-cookies-manager
+streamlit
+pandas
+numpy
+matplotlib
+mplsoccer
+fpdf
+dnspython
+requests
+streamlit-cookies-manager
