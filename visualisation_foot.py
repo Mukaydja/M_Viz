@@ -39,9 +39,9 @@ from google.oauth2.service_account import Credentials
 
 
 # ======================= CONFIG / CONSTANTES =======================
-# ID de ton Google Sheet
-SPREADSHEET_ID = "10ymrP1mAGDI-f1U6ShY7MxTx5zuF_QCqlMC7z6DLFp0"
-REQUIRED_HEADERS = ["Nom", "Prénom", "Email"]  # entêtes attendues dans la 1ère feuille
+SPREADSHEET_ID = "10ymrP1mAGDI-f1U6ShY7MxTx5zuF_QCqlMC7z6DLFp0"  # ton Google Sheet
+FORM_SHEET_NAME = "Formulaire"                                    # onglet cible
+REQUIRED_HEADERS = ["Nom", "Prénom", "Email"]                     # entêtes attendues
 
 EMAIL_REGEX = re.compile(
     r"^(?P<local>[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+)@(?P<domain>[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)$"
@@ -57,19 +57,39 @@ def get_gs_client():
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
     return gspread.authorize(creds)
 
-def get_target_worksheet():
-    """Retourne la première feuille du doc. Crée l’entête si vide."""
+def ensure_formulaire_worksheet_first():
+    """
+    Retourne l'onglet 'Formulaire'.
+    - Le crée si absent, avec l'entête Nom | Prénom | Email.
+    - Le déplace en première position du fichier.
+    """
     gc = get_gs_client()
     sh = gc.open_by_key(SPREADSHEET_ID)
-    ws = sh.sheet1
+
+    try:
+        ws = sh.worksheet(FORM_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=FORM_SHEET_NAME, rows=1000, cols=10)
+        ws.update("A1:C1", [REQUIRED_HEADERS])
+
+    # Assure l'entête si feuille existante mais vide
     first_row = ws.row_values(1)
     if not first_row:
         ws.update("A1:C1", [REQUIRED_HEADERS])
+
+    # Mettre l'onglet en premier si nécessaire
+    worksheets = sh.worksheets()
+    if worksheets[0].id != ws.id:
+        # place 'Formulaire' en première position
+        new_order = [ws] + [w for w in worksheets if w.id != ws.id]
+        sh.reorder_worksheets(new_order)
+
     return ws
 
-def append_row_to_sheet(nom: str, prenom: str, email: str):
-    ws = get_target_worksheet()
+def append_row_to_formulaire(nom: str, prenom: str, email: str):
+    ws = ensure_formulaire_worksheet_first()
     ws.append_row([nom, prenom, email], value_input_option="RAW")
+
 
 # ======================= VALIDATION EMAIL =======================
 def valid_syntax(email: str):
@@ -96,8 +116,7 @@ def domain_has_mx(domain: str) -> bool:
     return True
 
 
-# ======================= GARDE D’ENTRÉE =======================
-# (A placer avant toute UI principale)
+# ======================= GARDE D’ENTRÉE (ONGLET FORMULAIRE) =======================
 if "gate_ok" not in st.session_state:
     st.session_state["gate_ok"] = False
 
@@ -115,7 +134,7 @@ if not st.session_state["gate_ok"]:
         if not _HAS_DNSPYTHON:
             st.caption("ℹ️ Vérification MX limitée (dnspython non installé).")
 
-    consent = st.checkbox("J’autorise le stockage de ces informations dans le fichier Google Sheet.")
+    consent = st.checkbox("J’autorise le stockage de ces informations dans le fichier Google Sheet (onglet 'Formulaire').")
     submit = st.button("Entrer")
 
     if submit:
@@ -137,7 +156,7 @@ if not st.session_state["gate_ok"]:
             st.stop()
 
         try:
-            append_row_to_sheet(nom.strip().title(), prenom.strip().title(), email.strip().lower())
+            append_row_to_formulaire(nom.strip().title(), prenom.strip().title(), email.strip().lower())
         except Exception as e:
             st.error(f"Impossible d’enregistrer dans le Google Sheet : {e}")
             st.stop()
@@ -318,7 +337,7 @@ else:
     zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
     st.dataframe(zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"}))
 
-    # ---- Analyse par zones (rectangles inversés) ----
+    # ---- Analyse par zones ----
     st.markdown("---")
     st.header("Visualisations sur Terrain - Analyse par Zones")
 
@@ -550,7 +569,7 @@ else:
         vpitch.scatter(df_goals['X'], df_goals['Y'], s=700, marker='football',
                        edgecolors='black', c='white', zorder=3, label='But', ax=axs_shots['pitch'])
 
-    # Tir cadré (hors "But")  -> parenthèses obligatoires
+    # Tir cadré (hors "But")
     df_on = df_shots[(df_shots['TypeTir'] == 'Tir cadré') & (~df_shots['Event'].isin({'Goal', 'But'}))]
     if not df_on.empty:
         vpitch.scatter(df_on['X'], df_on['Y'], s=200, edgecolors='white', c='white', alpha=0.9,
@@ -597,9 +616,6 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.ln(40)
             pdf.cell(0, 15, "Rapport de Visualisation Footballistique", ln=True, align='C')
             pdf.ln(10)
-
-            # On peut ajouter quelques infos si désiré (équipes, joueurs, zones)
-            # (non requis, car le bloc e-mail est indépendant)
 
             # Pages analytiques générales (si dispos)
             if 'fig_zone' in locals() and 'fig_count' in locals():
