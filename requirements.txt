@@ -4,3 +4,12 @@ numpy>=1.24
 matplotlib>=3.7
 mplsoccer>=1.1.4
 fpdf>=1.7.2
+gspread
+google-auth
+dnspython
+mplsoccer
+fpdf
+matplotlib
+pandas
+numpy
+xlsxwriter
