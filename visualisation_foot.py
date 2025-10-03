@@ -1,13 +1,12 @@
-# visualisation_foot.py
-# --- IMPORTS (ajouts pour l'authentification + cookies) ---
+# am-fcp.py
+# --- IMPORTS (ajouts pour l'authentification) ---
 import uuid
 import json
 import time
 import os
 import hashlib
 import re
-
-# --- IMPORTS EXISTANTS ---
+# --- IMPORTS EXISTANTS (inchangés, à conserver) ---
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -20,464 +19,14 @@ from matplotlib.patches import Patch
 from fpdf import FPDF
 from tempfile import NamedTemporaryFile
 import base64
-from datetime import datetime, timedelta
 
-# --- GESTION DES COOKIES POUR MÉMOIRE UTILISATEUR ---
-try:
-    from streamlit_cookies_manager import CookieManager
-    cookies = CookieManager()
-    _COOKIES_AVAILABLE = True
-except Exception:
-    _COOKIES_AVAILABLE = False  # Échec silencieux
 
-# =========================================================
-# =============== CONFIG GÉNÉRALE & PAGE ==================
-# =========================================================
-st.set_page_config(page_title="Visualisation Foot", layout="wide")
-
-AUTH_MODE = "simple"  # "simple" | "otp"
-
-CONTACTS_PATH = os.path.join("data", "contacts.csv")
-os.makedirs(os.path.dirname(CONTACTS_PATH), exist_ok=True)
-
-EMAIL_REGEX = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$"
-DISPOSABLE_DOMAINS = {
-    "mailinator.com","10minutemail.com","10minutemail.net","10minutemail.co.uk",
-    "tempmail.com","tempmailo.com","tempmailaddress.com","guerrillamail.com",
-    "yopmail.com","trashmail.com","getnada.com","sharklasers.com",
-    "maildrop.cc","moakt.com","throwawaymail.com","dispostable.com"
-}
-
-try:
-    import dns.resolver
-    _DNS_AVAILABLE = True
-except Exception:
-    _DNS_AVAILABLE = False
-
-def has_mx_record(email: str) -> bool:
-    try:
-        domain = email.split("@", 1)[1].strip().lower()
-        if not domain:
-            return False
-        if not _DNS_AVAILABLE:
-            return True
-        answers = dns.resolver.resolve(domain, "MX")
-        return len(answers) > 0
-    except Exception:
-        return False
-
-@st.cache_data(ttl=300)
-def load_contacts() -> pd.DataFrame:
-    cols = ["id", "nom", "prenom", "email", "email_sha256", "created_at"]
-    if os.path.exists(CONTACTS_PATH):
-        try:
-            dfc = pd.read_csv(CONTACTS_PATH, dtype=str)
-            for c in cols:
-                if c not in dfc.columns:
-                    dfc[c] = ""
-            return dfc[cols]
-        except Exception:
-            return pd.DataFrame(columns=cols)
-    else:
-        return pd.DataFrame(columns=cols)
-
-def save_contact(nom: str, prenom: str, email: str):
-    dfc = load_contacts()
-    email_norm = email.strip().lower()
-    email_hash = hashlib.sha256(email_norm.encode()).hexdigest()
-    if "email" in dfc.columns and not dfc[dfc["email"].str.lower() == email_norm].empty:
-        return True, "Bienvenue à nouveau 👋", email_hash
-    new_row = {
-        "id": str(uuid.uuid4()),
-        "nom": nom.strip(),
-        "prenom": prenom.strip(),
-        "email": email_norm,
-        "email_sha256": email_hash,
-        "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    dfc = pd.concat([dfc, pd.DataFrame([new_row])], ignore_index=True)
-    dfc.to_csv(CONTACTS_PATH, index=False)
-    load_contacts.clear()
-    return True, "Coordonnées enregistrées ✅", email_hash
-
-# =========================================================
-# ================== MODE OTP (optionnel) =================
-import socket, ssl, smtplib, json, random, string
-try:
-    import requests
-    _REQ_AVAILABLE = True
-except Exception:
-    _REQ_AVAILABLE = False
-
-OTP_TTL_MINUTES = 10
-OTP_LENGTH = 6
-
-def _gen_otp(n: int = OTP_LENGTH) -> str:
-    return "".join(random.choices(string.digits, k=n))
-
-def _resolve_host_or_msg(host: str) -> tuple[bool, str]:
-    try:
-        socket.getaddrinfo(host, None)
-        return True, ""
-    except Exception as e:
-        return False, f"Impossible de résoudre le nom d’hôte '{host}'. Erreur: {e}"
-
-def send_otp_email(to_email: str, otp: str) -> tuple[bool, str]:
-    backend = (st.secrets.get("EMAIL_BACKEND") or "smtp").lower()
-    app_name = st.secrets.get("APP_NAME", "Votre application")
-    subject = f"[{app_name}] Votre code de vérification"
-    body = (
-        f"Bonjour,\n\n"
-        f"Voici votre code de vérification : {otp}\n"
-        f"Il expire dans {OTP_TTL_MINUTES} minutes.\n\n"
-        f"--\n{app_name}"
-    )
-
-    if backend == "smtp":
-        host = st.secrets.get("SMTP_HOST")
-        port = int(st.secrets.get("SMTP_PORT", 465))
-        user = st.secrets.get("SMTP_USER")
-        pwd  = st.secrets.get("SMTP_PASS")
-        from_addr = st.secrets.get("SMTP_FROM", user)
-        security = (st.secrets.get("SMTP_SECURITY") or "SSL").upper()
-        missing = [k for k,v in {"SMTP_HOST":host,"SMTP_PORT":port,"SMTP_USER":user,"SMTP_PASS":pwd}.items() if not v]
-        if missing:
-            return False, f"Config SMTP incomplète (manque: {', '.join(missing)})."
-
-        ok_res, msg_res = _resolve_host_or_msg(host)
-        if not ok_res:
-            if st.secrets.get("DEBUG_OTP", False):
-                st.warning(f"[DEV] {msg_res} — OTP affiché ci-dessous.")
-                st.code(otp)
-                return True, "Mode DEV : OTP affiché (SMTP non résolu)."
-            return False, msg_res
-
-        msg_bytes = f"From: {from_addr}\r\nTo: {to_email}\r\nSubject: {subject}\r\n\r\n{body}".encode("utf-8")
-        try:
-            if security == "SSL":
-                context = ssl.create_default_context()
-                with smtplib.SMTP_SSL(host, port, context=context, timeout=20) as server:
-                    server.login(user, pwd)
-                    server.sendmail(from_addr, [to_email], msg_bytes)
-            elif security == "STARTTLS":
-                with smtplib.SMTP(host, port, timeout=20) as server:
-                    server.ehlo(); server.starttls(context=ssl.create_default_context()); server.ehlo()
-                    server.login(user, pwd)
-                    server.sendmail(from_addr, [to_email], msg_bytes)
-            else:
-                with smtplib.SMTP(host, port, timeout=20) as server:
-                    server.login(user, pwd)
-                    server.sendmail(from_addr, [to_email], msg_bytes)
-            return True, "Un code vous a été envoyé par email."
-        except Exception as e:
-            if st.secrets.get("DEBUG_OTP", False):
-                st.warning(f"[DEV] Envoi SMTP impossible ({e}). OTP affiché ci-dessous.")
-                st.code(otp)
-                return True, "Mode DEV : OTP affiché (SMTP KO)."
-            return False, f"Échec d'envoi SMTP : {e}"
-
-    if backend == "sendgrid":
-        if not _REQ_AVAILABLE:
-            return False, "SendGrid nécessite 'requests'."
-        api_key = st.secrets.get("SENDGRID_API_KEY")
-        from_addr = st.secrets.get("SMTP_FROM")
-        if not api_key or not from_addr:
-            return False, "Config SendGrid incomplète."
-        url = "https://api.sendgrid.com/v3/mail/send"
-        payload = {
-            "personalizations": [{"to":[{"email": to_email}], "subject": subject}],
-            "from": {"email": from_addr},
-            "content": [{"type": "text/plain", "value": body}]
-        }
-        try:
-            r = requests.post(url, headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, data=json.dumps(payload), timeout=20)
-            if 200 <= r.status_code < 300:
-                return True, "Un code vous a été envoyé par email."
-            else:
-                if st.secrets.get("DEBUG_OTP", False):
-                    st.warning(f"[DEV] SendGrid {r.status_code}: {r.text}. OTP affiché.")
-                    st.code(otp)
-                    return True, "Mode DEV : OTP affiché (SendGrid KO)."
-                return False, f"SendGrid {r.status_code}: {r.text}"
-        except Exception as e:
-            if st.secrets.get("DEBUG_OTP", False):
-                st.warning(f"[DEV] Envoi SendGrid impossible ({e}). OTP affiché.")
-                st.code(otp)
-                return True, "Mode DEV : OTP affiché (SendGrid KO)."
-            return False, f"Échec d'envoi via SendGrid : {e}"
-
-    if backend == "mailgun":
-        if not _REQ_AVAILABLE:
-            return False, "Mailgun nécessite 'requests'."
-        domain = st.secrets.get("MAILGUN_DOMAIN")
-        api_key = st.secrets.get("MAILGUN_API_KEY")
-        from_addr = st.secrets.get("SMTP_FROM")
-        if not domain or not api_key or not from_addr:
-            return False, "Config Mailgun incomplète."
-        url = f"https://api.mailgun.net/v3/{domain}/messages"
-        data = {"from": from_addr, "to": [to_email], "subject": subject, "text": body}
-        try:
-            r = requests.post(url, auth=("api", api_key), data=data, timeout=20)
-            if 200 <= r.status_code < 300:
-                return True, "Un code vous a été envoyé par email."
-            else:
-                if st.secrets.get("DEBUG_OTP", False):
-                    st.warning(f"[DEV] Mailgun {r.status_code}: {r.text}. OTP affiché.")
-                    st.code(otp)
-                    return True, "Mode DEV : OTP affiché (Mailgun KO)."
-                return False, f"Mailgun {r.status_code}: {r.text}"
-        except Exception as e:
-            if st.secrets.get("DEBUG_OTP", False):
-                st.warning(f"[DEV] Envoi Mailgun impossible ({e}). OTP affiché.")
-                st.code(otp)
-                return True, "Mode DEV : OTP affiché (Mailgun KO)."
-            return False, f"Échec d'envoi via Mailgun : {e}"
-
-    return False, f"EMAIL_BACKEND inconnu: {backend}. Utilise 'smtp', 'sendgrid' ou 'mailgun'."
-
-def start_otp_flow(nom: str, prenom: str, email: str):
-    otp = _gen_otp()
-    st.session_state["pending_gate"] = {
-        "nom": nom.strip(),
-        "prenom": prenom.strip(),
-        "email": email.strip().lower(),
-        "otp": otp,
-        "otp_expires_at": (datetime.utcnow() + timedelta(minutes=OTP_TTL_MINUTES)).isoformat(),
-        "tries": 0
-    }
-    ok, msg = send_otp_email(email.strip(), otp)
-    if ok:
-        st.info(msg)
-    else:
-        st.error(msg)
-        if st.secrets.get("DEBUG_OTP", False):
-            st.code(otp)
-
-def render_otp_form() -> bool:
-    if "pending_gate" not in st.session_state:
-        return False
-
-    pending = st.session_state["pending_gate"]
-    expires_at = datetime.fromisoformat(pending["otp_expires_at"])
-    remaining = max(0, int((expires_at - datetime.utcnow()).total_seconds() // 60))
-
-    st.markdown("### ✉️ Vérification de votre email")
-    st.caption(f"Un code a été envoyé à **{pending['email']}**. Il expirera dans {remaining} minute(s).")
-
-    with st.form("otp_form", clear_on_submit=False):
-        otp_input = st.text_input("Code de vérification (6 chiffres) *", max_chars=OTP_LENGTH)
-        c1, c2 = st.columns(2)
-        with c1:
-            validate = st.form_submit_button("Valider")
-        with c2:
-            resend = st.form_submit_button("Renvoyer le code")
-
-    if resend:
-        start_otp_flow(pending["nom"], pending["prenom"], pending["email"])
-        st.stop()
-
-    if validate:
-        if datetime.utcnow() > expires_at:
-            st.error("Code expiré. Un nouveau code a été envoyé.")
-            start_otp_flow(pending["nom"], pending["prenom"], pending["email"])
-            st.stop()
-
-        if otp_input and otp_input.strip() == pending["otp"]:
-            ok, msg, email_hash = save_contact(pending["nom"], pending["prenom"], pending["email"])
-            if ok:
-                st.session_state["gate_passed"] = True
-                st.session_state["user_email_hash"] = email_hash
-                st.session_state["username"] = f"{pending['prenom'].title()} {pending['nom'].upper()}"
-                if _COOKIES_AVAILABLE:
-                    cookies["user_nom"] = pending["nom"]
-                    cookies["user_prenom"] = pending["prenom"]
-                    cookies["user_email"] = pending["email"]
-                    cookies["user_email_hash"] = email_hash
-                    cookies.save()
-                del st.session_state["pending_gate"]
-                st.success("Email vérifié ✅")
-                try:
-                    st.rerun()
-                except AttributeError:
-                    st.experimental_rerun()
-                st.stop()
-        else:
-            pending["tries"] += 1
-            st.error("Code invalide.")
-            if pending["tries"] >= 5:
-                st.warning("Trop d'essais. Un nouveau code a été envoyé.")
-                start_otp_flow(pending["nom"], pending["prenom"], pending["email"])
-            st.stop()
-
-    return True
-
-# =========================================================
-# =================== PORTAIL D’ACCÈS =====================
-# =========================================================
-def require_user_gate():
-    st.markdown("## 🔐 Accès")
-
-    # 🔁 Connexion automatique si déjà authentifié
-    if _COOKIES_AVAILABLE and "user_email_hash" in cookies and cookies["user_email_hash"]:
-        email_hash = cookies["user_email_hash"]
-        dfc = load_contacts()
-        if "email_sha256" in dfc.columns and not dfc[dfc["email_sha256"] == email_hash].empty:
-            user_row = dfc[dfc["email_sha256"] == email_hash].iloc[0]
-            st.session_state["gate_passed"] = True
-            st.session_state["user_email_hash"] = email_hash
-            st.session_state["username"] = f"{user_row['prenom'].title()} {user_row['nom'].upper()}"
-            st.success(f"Re-bonjour, {st.session_state['username']} ! 👋")
-            try:
-                st.rerun()
-            except AttributeError:
-                st.experimental_rerun()
-            st.stop()
-
-    # 🧠 Charger les valeurs sauvegardées pour pré-remplissage
-    saved_nom = cookies.get("user_nom", "") if _COOKIES_AVAILABLE else ""
-    saved_prenom = cookies.get("user_prenom", "") if _COOKIES_AVAILABLE else ""
-    saved_email = cookies.get("user_email", "") if _COOKIES_AVAILABLE else ""
-
-    if AUTH_MODE == "otp" and render_otp_form():
-        return
-
-    with st.form("gate_form", clear_on_submit=False):
-        col1, col2 = st.columns(2)
-        with col1:
-            nom = st.text_input("Nom *", value=saved_nom)
-        with col2:
-            prenom = st.text_input("Prénom *", value=saved_prenom)
-        email = st.text_input("Email *", placeholder="ex: nom@domaine.com", value=saved_email)
-
-        if AUTH_MODE == "otp":
-            consent = st.checkbox(
-                "J’accepte que mes informations soient utilisées pour personnaliser l’application.",
-                value=True
-            )
-
-        button_label = "Recevoir un code et continuer" if AUTH_MODE == "otp" else "Continuer"
-        submitted = st.form_submit_button(button_label)
-
-        if submitted:
-            if not nom or not prenom or not email:
-                st.error("Merci de remplir tous les champs obligatoires (*)")
-                st.stop()
-
-            email_norm = email.strip().lower()
-            if not re.match(EMAIL_REGEX, email_norm):
-                st.error("Adresse email invalide.")
-                st.stop()
-
-            domain = email_norm.split("@", 1)[1]
-            if domain in DISPOSABLE_DOMAINS:
-                st.error("Les emails jetables ne sont pas autorisés.")
-                st.stop()
-
-            if not has_mx_record(email_norm):
-                st.error("Le domaine de l'email ne semble pas exister (MX introuvable).")
-                st.stop()
-
-            if AUTH_MODE == "otp":
-                if not consent:
-                    st.warning("Vous devez accepter pour continuer.")
-                    st.stop()
-                start_otp_flow(nom, prenom, email_norm)
-                st.stop()
-            else:
-                ok, msg, email_hash = save_contact(nom, prenom, email_norm)
-                if ok:
-                    st.session_state["gate_passed"] = True
-                    st.session_state["user_email_hash"] = email_hash
-                    st.session_state["username"] = f"{prenom.strip().title()} {nom.strip().upper()}"
-                    if _COOKIES_AVAILABLE:
-                        cookies["user_nom"] = nom.strip()
-                        cookies["user_prenom"] = prenom.strip()
-                        cookies["user_email"] = email_norm
-                        cookies["user_email_hash"] = email_hash
-                        cookies.save()
-                    st.success(msg)
-                    try:
-                        st.rerun()
-                    except AttributeError:
-                        st.experimental_rerun()
-                    st.stop()
-
-# 🔒 Bloquer l'accès tant que non identifié
-if not st.session_state.get("gate_passed"):
-    require_user_gate()
-    st.stop()
-
-# --- ADMIN : Consulter / Exporter les contacts (protégé) ---
-with st.sidebar.expander("🔑 Contacts (admin)", expanded=False):
-    admin_key = st.text_input("Clé d'administration", type="password", key="admin_key_input")
-    expected = st.secrets.get("ADMIN_KEY", None)
-
-    if expected and admin_key == expected:
-        try:
-            dfc = load_contacts().copy()
-        except Exception as e:
-            st.error(f"Impossible de charger les contacts : {e}")
-            dfc = pd.DataFrame(columns=["created_at","prenom","nom","email","email_sha256","id"])
-
-        if "created_at" in dfc.columns:
-            dfc["created_at"] = pd.to_datetime(dfc["created_at"], errors="coerce")
-            dfc = dfc.sort_values("created_at", ascending=False)
-
-        st.write(f"👥 {len(dfc)} contact(s) enregistré(s)")
-        show_full = st.checkbox("Afficher les emails complets", value=False, key="show_full_emails")
-        df_view = dfc.copy()
-        if "email" in df_view.columns and not show_full:
-            df_view["email"] = df_view["email"].fillna("").str.replace(
-                r"(^.).+(@.+$)", r"\1***\2", regex=True
-            )
-
-        cols_to_show = [c for c in ["created_at","prenom","nom","email"] if c in df_view.columns]
-        st.dataframe(df_view[cols_to_show], use_container_width=True)
-
-        with st.popover("🗓️ Filtrer par date (optionnel)"):
-            min_d, max_d = None, None
-            if "created_at" in dfc.columns and not dfc["created_at"].isna().all():
-                min_d = pd.to_datetime(dfc["created_at"]).min().date()
-                max_d = pd.to_datetime(dfc["created_at"]).max().date()
-            if min_d and max_d:
-                d1, d2 = st.date_input("Intervalle", (min_d, max_d), key="date_filter")
-                if isinstance(d1, pd.Timestamp): d1 = d1.date()
-                if isinstance(d2, pd.Timestamp): d2 = d2.date()
-                if d1 and d2:
-                    mask = (pd.to_datetime(dfc["created_at"]).dt.date >= d1) & (pd.to_datetime(dfc["created_at"]).dt.date <= d2)
-                    dfc_filtered = dfc.loc[mask].copy()
-                else:
-                    dfc_filtered = dfc
-            else:
-                dfc_filtered = dfc
-
-            st.download_button(
-                "📥 Télécharger (CSV, filtré si dates)",
-                data=dfc_filtered.to_csv(index=False).encode("utf-8-sig"),
-                file_name="contacts.csv",
-                mime="text/csv",
-                key="download_filtered"
-            )
-
-        st.download_button(
-            "⬇️ Télécharger (CSV complet)",
-            data=dfc.to_csv(index=False).encode("utf-8-sig"),
-            file_name="contacts_complet.csv",
-            mime="text/csv",
-            key="download_complete"
-        )
-
-        st.caption("Astuce : les emails sont masqués par défaut. Coche l’option pour les voir en clair.")
-
-    elif admin_key:
-        st.error("Clé admin invalide.")
-
-# =========================================================
-# ===================== PAGE PRINCIPALE ===================
-# =========================================================
+# --- PAGE PRINCIPALE ---
 if 'username' in st.session_state:
+    st.set_page_config(page_title=f"Visualisation Foot - {st.session_state['username']}", layout="wide")
     st.title(f"⚽ Outil de Visualisation de Données Footballistiques - Bienvenue, {st.session_state['username']} !")
 else:
+    st.set_page_config(page_title="Visualisation Foot", layout="wide")
     st.title("Outil de Visualisation de Données Footballistiques")
 
 # --- UPLOAD CSV ---
@@ -553,8 +102,14 @@ displayed_events = st.sidebar.multiselect(
     default=["Pass"] if "Pass" in event_options else event_options[:1]
 )
 
-# --- CLASSIFICATION EN 3 ZONES ---
+# --- ✅ CORRECTION : CLASSIFICATION EN 3 ZONES (Haute/Basse inversées) ---
 def classify_zone(x, y):
+    """
+    Classification en 3 zones :
+    - Haute : x < 40 (désormais zone côté gauche/défensive)
+    - Médiane : 40 <= x <= 80
+    - Basse : x > 80 (désormais zone côté droit/offensive)
+    """
     if x < 40:
         return 'Haute'
     elif x <= 80:
@@ -562,6 +117,7 @@ def classify_zone(x, y):
     else:
         return 'Basse'
 
+# --- Ajout temporaire pour le filtre ---
 df['Zone_temp'] = df.apply(lambda row: classify_zone(row['X'], row['Y']), axis=1)
 zone_options = sorted(df['Zone_temp'].dropna().unique())
 del df['Zone_temp']
@@ -592,13 +148,13 @@ PALETTE_OPTIONS = {
 display_names_list = list(PALETTE_OPTIONS.keys())
 
 with st.sidebar.expander("➕ Options Avancées"):
-    arrow_width = st.slider("Épaisseur des flèches", 0.5, 5.0, 2.0, 0.5)
-    arrow_head_scale = st.slider("Taille de la tête des flèches", 1.0, 10.0, 2.0, 0.5)
-    arrow_alpha = st.slider("Opacité des flèches", 0.1, 1.0, 0.8, 0.1)
-    point_size = st.slider("Taille des points", 20, 200, 80, 10)
-    scatter_alpha = st.slider("Opacité des points", 0.1, 1.0, 0.8, 0.1)
-    heatmap_alpha = st.slider("Opacité de la heatmap", 0.1, 1.0, 0.85, 0.05)
-    heatmap_statistic = st.selectbox("Type de statistique", ['count', 'density'], index=0)
+    arrow_width = st.slider("Épaisseur des flèches", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
+    arrow_head_scale = st.slider("Taille de la tête des flèches", min_value=1.0, max_value=10.0, value=2.0, step=0.5)
+    arrow_alpha = st.slider("Opacité des flèches", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
+    point_size = st.slider("Taille des points", min_value=20, max_value=200, value=80, step=10)
+    scatter_alpha = st.slider("Opacité des points", min_value=0.1, max_value=1.0, value=0.8, step=0.1)
+    heatmap_alpha = st.slider("Opacité de la heatmap", min_value=0.1, max_value=1.0, value=0.85, step=0.05)
+    heatmap_statistic = st.selectbox("Type de statistique", options=['count', 'density'], index=0)
     show_heatmap_labels = st.checkbox("Afficher les labels sur la heatmap", value=True)
     hide_zero_percent_labels = st.checkbox("Masquer les labels 0%", value=True)
     selected_palette_display_name = st.selectbox("Palette de couleurs", options=display_names_list, index=0)
@@ -635,7 +191,7 @@ total_events = zone_total['Total'].sum()
 zone_total['Pourcentage'] = (zone_total['Total'] / total_events * 100).round(1)
 st.dataframe(zone_total.style.background_gradient(cmap='Reds', subset=['Pourcentage']).format({"Pourcentage": "{:.1f}%"}))
 
-# --- VISUALISATIONS PAR ZONES ---
+# --- VISUALISATIONS PAR ZONES (3 ZONES SEULEMENT) ---
 st.markdown("---")
 st.header("Visualisations sur Terrain - Analyse par Zones")
 
@@ -647,16 +203,17 @@ common_pitch_params = {
 }
 fig_size = (8, 5.5)
 
+# ✅ RECTANGLES CORRIGÉS : 3 zones, Haute/Basse inversées pour correspondre à la classification
 zones_rects = {
-    'Haute': (0, 0, 40, 80),
-    'Médiane': (40, 0, 40, 80),
-    'Basse': (80, 0, 40, 80)
+    'Haute': (0, 0, 40, 80),        # x=0 à 40   (désormais Haute)
+    'Médiane': (40, 0, 40, 80),     # x=40 à 80
+    'Basse': (80, 0, 40, 80)        # x=80 à 120 (désormais Basse)
 }
 
 zone_colors = {
-    'Haute': '#FFD700',
-    'Médiane': '#98FB98',
-    'Basse': '#87CEEB'
+    'Haute': '#FFD700',          # Or
+    'Médiane': '#98FB98',        # Vert
+    'Basse': '#87CEEB'           # Bleu
 }
 
 col_a, col_b = st.columns(2)
@@ -742,6 +299,7 @@ with col1:
         fig1.set_facecolor('white')
         st.pyplot(fig1)
 
+        # Légende dans la sidebar
         if show_legend:
             with st.sidebar:
                 st.markdown("### 🎨 Légende des événements")
@@ -895,7 +453,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
             pdf.cell(terrain_width, 8, "Heatmap des événements", align='C')
             add_footer()
 
-            if 'combined_images' in locals() and combined_images:
+            if combined_images:
                 pdf.add_page()
                 pdf.set_font("Arial", 'B', 18)
                 pdf.cell(0, 12, "Cartes Combinées par Type d'Événement", ln=True, align='C')
@@ -930,13 +488,7 @@ if st.sidebar.button("📥 Télécharger le rapport PDF complet"):
                 os.unlink(tmp_pdf.name)
 
         finally:
-            if 'combined_images' in locals():
-                for _, img in combined_images:
-                    try:
-                        os.unlink(img)
-                    except:
-                        pass
-            for f in temp_files:
+            for f in temp_files + [img for _, img in combined_images]:
                 try:
                     os.unlink(f)
                 except:
