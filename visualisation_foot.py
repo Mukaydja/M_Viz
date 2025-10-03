@@ -22,13 +22,13 @@ from tempfile import NamedTemporaryFile
 import base64
 from datetime import datetime, timedelta
 
-# --- GESTION DES COOKIES POUR CONNEXION PERSISTANTE ---
+# --- GESTION DES COOKIES POUR MÉMOIRE UTILISATEUR ---
 try:
     from streamlit_cookies_manager import CookieManager
     cookies = CookieManager()
     _COOKIES_AVAILABLE = True
 except Exception:
-    _COOKIES_AVAILABLE = False  # Échec silencieux (pas d'avertissement)
+    _COOKIES_AVAILABLE = False  # Échec silencieux
 
 # =========================================================
 # =============== CONFIG GÉNÉRALE & PAGE ==================
@@ -97,12 +97,11 @@ def save_contact(nom: str, prenom: str, email: str):
     }
     dfc = pd.concat([dfc, pd.DataFrame([new_row])], ignore_index=True)
     dfc.to_csv(CONTACTS_PATH, index=False)
-    load_contacts.clear()  # Invalider le cache
+    load_contacts.clear()
     return True, "Coordonnées enregistrées ✅", email_hash
 
 # =========================================================
 # ================== MODE OTP (optionnel) =================
-# (inchangé – conservé pour compatibilité)
 import socket, ssl, smtplib, json, random, string
 try:
     import requests
@@ -290,6 +289,9 @@ def render_otp_form() -> bool:
                 st.session_state["user_email_hash"] = email_hash
                 st.session_state["username"] = f"{pending['prenom'].title()} {pending['nom'].upper()}"
                 if _COOKIES_AVAILABLE:
+                    cookies["user_nom"] = pending["nom"]
+                    cookies["user_prenom"] = pending["prenom"]
+                    cookies["user_email"] = pending["email"]
                     cookies["user_email_hash"] = email_hash
                     cookies.save()
                 del st.session_state["pending_gate"]
@@ -315,7 +317,7 @@ def render_otp_form() -> bool:
 def require_user_gate():
     st.markdown("## 🔐 Accès")
 
-    # 🔁 Vérifier si l'utilisateur est déjà connecté via cookie
+    # 🔁 Connexion automatique si déjà authentifié
     if _COOKIES_AVAILABLE and "user_email_hash" in cookies and cookies["user_email_hash"]:
         email_hash = cookies["user_email_hash"]
         dfc = load_contacts()
@@ -331,16 +333,21 @@ def require_user_gate():
                 st.experimental_rerun()
             st.stop()
 
+    # 🧠 Charger les valeurs sauvegardées pour pré-remplissage
+    saved_nom = cookies.get("user_nom", "") if _COOKIES_AVAILABLE else ""
+    saved_prenom = cookies.get("user_prenom", "") if _COOKIES_AVAILABLE else ""
+    saved_email = cookies.get("user_email", "") if _COOKIES_AVAILABLE else ""
+
     if AUTH_MODE == "otp" and render_otp_form():
         return
 
     with st.form("gate_form", clear_on_submit=False):
         col1, col2 = st.columns(2)
         with col1:
-            nom = st.text_input("Nom *")
+            nom = st.text_input("Nom *", value=saved_nom)
         with col2:
-            prenom = st.text_input("Prénom *")
-        email = st.text_input("Email *", placeholder="ex: nom@domaine.com")
+            prenom = st.text_input("Prénom *", value=saved_prenom)
+        email = st.text_input("Email *", placeholder="ex: nom@domaine.com", value=saved_email)
 
         if AUTH_MODE == "otp":
             consent = st.checkbox(
@@ -383,6 +390,9 @@ def require_user_gate():
                     st.session_state["user_email_hash"] = email_hash
                     st.session_state["username"] = f"{prenom.strip().title()} {nom.strip().upper()}"
                     if _COOKIES_AVAILABLE:
+                        cookies["user_nom"] = nom.strip()
+                        cookies["user_prenom"] = prenom.strip()
+                        cookies["user_email"] = email_norm
                         cookies["user_email_hash"] = email_hash
                         cookies.save()
                     st.success(msg)
@@ -399,7 +409,6 @@ if not st.session_state.get("gate_passed"):
 
 # --- ADMIN : Consulter / Exporter les contacts (protégé) ---
 with st.sidebar.expander("🔑 Contacts (admin)", expanded=False):
-    # 🔑 Ajout de `key` pour éviter StreamlitDuplicateElementId
     admin_key = st.text_input("Clé d'administration", type="password", key="admin_key_input")
     expected = st.secrets.get("ADMIN_KEY", None)
 
