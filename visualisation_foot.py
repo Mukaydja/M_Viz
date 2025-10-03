@@ -1,4 +1,4 @@
-# am-fcp.py
+# visualisation_foot.py
 # --- IMPORTS (ajouts pour l'authentification + cookies) ---
 import uuid
 import json
@@ -7,7 +7,7 @@ import os
 import hashlib
 import re
 
-# --- IMPORTS EXISTANTS (inchangés, à conserver) ---
+# --- IMPORTS EXISTANTS ---
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -22,23 +22,21 @@ from tempfile import NamedTemporaryFile
 import base64
 from datetime import datetime, timedelta
 
+# --- GESTION DES COOKIES POUR CONNEXION PERSISTANTE ---
 try:
     from streamlit_cookies_manager import CookieManager
     cookies = CookieManager()
     _COOKIES_AVAILABLE = True
 except Exception:
-    _COOKIES_AVAILABLE = False
-    # Pas d'avertissement visible — connexion non persistante en silence
+    _COOKIES_AVAILABLE = False  # Échec silencieux (pas d'avertissement)
 
 # =========================================================
 # =============== CONFIG GÉNÉRALE & PAGE ==================
 # =========================================================
 st.set_page_config(page_title="Visualisation Foot", layout="wide")
 
-# Choisis le mode d'authentification : "simple" (par défaut) ou "otp"
-AUTH_MODE = "simple"   # "simple" | "otp"
+AUTH_MODE = "simple"  # "simple" | "otp"
 
-# Fichiers / constantes communes
 CONTACTS_PATH = os.path.join("data", "contacts.csv")
 os.makedirs(os.path.dirname(CONTACTS_PATH), exist_ok=True)
 
@@ -50,7 +48,6 @@ DISPOSABLE_DOMAINS = {
     "maildrop.cc","moakt.com","throwawaymail.com","dispostable.com"
 }
 
-# Vérification MX (facultative si dnspython n'est pas installé)
 try:
     import dns.resolver
     _DNS_AVAILABLE = True
@@ -63,13 +60,13 @@ def has_mx_record(email: str) -> bool:
         if not domain:
             return False
         if not _DNS_AVAILABLE:
-            return True  # si dnspython absent, on ne bloque pas
+            return True
         answers = dns.resolver.resolve(domain, "MX")
         return len(answers) > 0
     except Exception:
         return False
 
-@st.cache_data(ttl=300)  # Cache rafraîchi toutes les 5 minutes
+@st.cache_data(ttl=300)
 def load_contacts() -> pd.DataFrame:
     cols = ["id", "nom", "prenom", "email", "email_sha256", "created_at"]
     if os.path.exists(CONTACTS_PATH):
@@ -85,7 +82,7 @@ def load_contacts() -> pd.DataFrame:
         return pd.DataFrame(columns=cols)
 
 def save_contact(nom: str, prenom: str, email: str):
-    dfc = load_contacts()  # Utilise le cache, mais on force un clear après écriture
+    dfc = load_contacts()
     email_norm = email.strip().lower()
     email_hash = hashlib.sha256(email_norm.encode()).hexdigest()
     if "email" in dfc.columns and not dfc[dfc["email"].str.lower() == email_norm].empty:
@@ -100,14 +97,12 @@ def save_contact(nom: str, prenom: str, email: str):
     }
     dfc = pd.concat([dfc, pd.DataFrame([new_row])], ignore_index=True)
     dfc.to_csv(CONTACTS_PATH, index=False)
-    # 🔁 Invalider le cache après écriture
-    load_contacts.clear()
+    load_contacts.clear()  # Invalider le cache
     return True, "Coordonnées enregistrées ✅", email_hash
-# =========================================================
-# ================== MODE OTP (inchangé) ==================
-# ... (le code OTP reste identique — on le garde tel quel)
-# (Je le conserve ici pour complétude, mais tu peux le laisser tel quel)
 
+# =========================================================
+# ================== MODE OTP (optionnel) =================
+# (inchangé – conservé pour compatibilité)
 import socket, ssl, smtplib, json, random, string
 try:
     import requests
@@ -294,7 +289,6 @@ def render_otp_form() -> bool:
                 st.session_state["gate_passed"] = True
                 st.session_state["user_email_hash"] = email_hash
                 st.session_state["username"] = f"{pending['prenom'].title()} {pending['nom'].upper()}"
-                # 🔑 ÉCRIRE LE COOKIE POUR LA PROCHAINE VISITE
                 if _COOKIES_AVAILABLE:
                     cookies["user_email_hash"] = email_hash
                     cookies.save()
@@ -321,7 +315,7 @@ def render_otp_form() -> bool:
 def require_user_gate():
     st.markdown("## 🔐 Accès")
 
-    # 🔍 VÉRIFIER SI LE COOKIE CONTIENT UN HASH VALIDE
+    # 🔁 Vérifier si l'utilisateur est déjà connecté via cookie
     if _COOKIES_AVAILABLE and "user_email_hash" in cookies and cookies["user_email_hash"]:
         email_hash = cookies["user_email_hash"]
         dfc = load_contacts()
@@ -337,64 +331,66 @@ def require_user_gate():
                 st.experimental_rerun()
             st.stop()
 
-    # Si OTP actif et un code est en cours → afficher le formulaire OTP
     if AUTH_MODE == "otp" and render_otp_form():
         return
 
-    with st.container():
-        with st.form("gate_form", clear_on_submit=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                nom = st.text_input("Nom *")
-            with col2:
-                prenom = st.text_input("Prénom *")
-            email = st.text_input("Email *", placeholder="ex: nom@domaine.com")
+    with st.form("gate_form", clear_on_submit=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            nom = st.text_input("Nom *")
+        with col2:
+            prenom = st.text_input("Prénom *")
+        email = st.text_input("Email *", placeholder="ex: nom@domaine.com")
+
+        if AUTH_MODE == "otp":
+            consent = st.checkbox(
+                "J’accepte que mes informations soient utilisées pour personnaliser l’application.",
+                value=True
+            )
+
+        button_label = "Recevoir un code et continuer" if AUTH_MODE == "otp" else "Continuer"
+        submitted = st.form_submit_button(button_label)
+
+        if submitted:
+            if not nom or not prenom or not email:
+                st.error("Merci de remplir tous les champs obligatoires (*)")
+                st.stop()
+
+            email_norm = email.strip().lower()
+            if not re.match(EMAIL_REGEX, email_norm):
+                st.error("Adresse email invalide.")
+                st.stop()
+
+            domain = email_norm.split("@", 1)[1]
+            if domain in DISPOSABLE_DOMAINS:
+                st.error("Les emails jetables ne sont pas autorisés.")
+                st.stop()
+
+            if not has_mx_record(email_norm):
+                st.error("Le domaine de l'email ne semble pas exister (MX introuvable).")
+                st.stop()
 
             if AUTH_MODE == "otp":
-                consent = st.checkbox(
-                    "J’accepte que mes informations (nom, prénom, email) soient utilisées pour personnaliser l’application.",
-                    value=True
-                )
-
-            button_label = "Recevoir un code et continuer" if AUTH_MODE == "otp" else "Continuer"
-            submitted = st.form_submit_button(button_label)
-
-            if submitted:
-                if not nom or not prenom or not email:
-                    st.error("Merci de remplir tous les champs obligatoires (*)"); st.stop()
-
-                email_norm = email.strip().lower()
-                if not re.match(EMAIL_REGEX, email_norm):
-                    st.error("Adresse email invalide."); st.stop()
-
-                domain = email_norm.split("@", 1)[1]
-                if domain in DISPOSABLE_DOMAINS:
-                    st.error("Les emails jetables ne sont pas autorisés."); st.stop()
-
-                if not has_mx_record(email_norm):
-                    st.error("Le domaine de l'email ne semble pas exister (MX introuvable)."); st.stop()
-
-                if AUTH_MODE == "otp":
-                    if not consent:
-                        st.warning("Vous devez accepter pour continuer."); st.stop()
-                    start_otp_flow(nom, prenom, email_norm)
+                if not consent:
+                    st.warning("Vous devez accepter pour continuer.")
                     st.stop()
-                else:
-                    ok, msg, email_hash = save_contact(nom, prenom, email_norm)
-                    if ok:
-                        st.session_state["gate_passed"] = True
-                        st.session_state["user_email_hash"] = email_hash
-                        st.session_state["username"] = f"{prenom.strip().title()} {nom.strip().upper()}"
-                        # 🔑 ÉCRIRE LE COOKIE
-                        if _COOKIES_AVAILABLE:
-                            cookies["user_email_hash"] = email_hash
-                            cookies.save()
-                        st.success(msg)
-                        try:
-                            st.rerun()
-                        except AttributeError:
-                            st.experimental_rerun()
-                        st.stop()
+                start_otp_flow(nom, prenom, email_norm)
+                st.stop()
+            else:
+                ok, msg, email_hash = save_contact(nom, prenom, email_norm)
+                if ok:
+                    st.session_state["gate_passed"] = True
+                    st.session_state["user_email_hash"] = email_hash
+                    st.session_state["username"] = f"{prenom.strip().title()} {nom.strip().upper()}"
+                    if _COOKIES_AVAILABLE:
+                        cookies["user_email_hash"] = email_hash
+                        cookies.save()
+                    st.success(msg)
+                    try:
+                        st.rerun()
+                    except AttributeError:
+                        st.experimental_rerun()
+                    st.stop()
 
 # 🔒 Bloquer l'accès tant que non identifié
 if not st.session_state.get("gate_passed"):
@@ -403,7 +399,8 @@ if not st.session_state.get("gate_passed"):
 
 # --- ADMIN : Consulter / Exporter les contacts (protégé) ---
 with st.sidebar.expander("🔑 Contacts (admin)", expanded=False):
-    admin_key = st.text_input("Admin key", type="password")
+    # 🔑 Ajout de `key` pour éviter StreamlitDuplicateElementId
+    admin_key = st.text_input("Clé d'administration", type="password", key="admin_key_input")
     expected = st.secrets.get("ADMIN_KEY", None)
 
     if expected and admin_key == expected:
@@ -418,7 +415,7 @@ with st.sidebar.expander("🔑 Contacts (admin)", expanded=False):
             dfc = dfc.sort_values("created_at", ascending=False)
 
         st.write(f"👥 {len(dfc)} contact(s) enregistré(s)")
-        show_full = st.checkbox("Afficher les emails complets", value=False)
+        show_full = st.checkbox("Afficher les emails complets", value=False, key="show_full_emails")
         df_view = dfc.copy()
         if "email" in df_view.columns and not show_full:
             df_view["email"] = df_view["email"].fillna("").str.replace(
@@ -434,7 +431,7 @@ with st.sidebar.expander("🔑 Contacts (admin)", expanded=False):
                 min_d = pd.to_datetime(dfc["created_at"]).min().date()
                 max_d = pd.to_datetime(dfc["created_at"]).max().date()
             if min_d and max_d:
-                d1, d2 = st.date_input("Intervalle", (min_d, max_d))
+                d1, d2 = st.date_input("Intervalle", (min_d, max_d), key="date_filter")
                 if isinstance(d1, pd.Timestamp): d1 = d1.date()
                 if isinstance(d2, pd.Timestamp): d2 = d2.date()
                 if d1 and d2:
@@ -449,14 +446,16 @@ with st.sidebar.expander("🔑 Contacts (admin)", expanded=False):
                 "📥 Télécharger (CSV, filtré si dates)",
                 data=dfc_filtered.to_csv(index=False).encode("utf-8-sig"),
                 file_name="contacts.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key="download_filtered"
             )
 
         st.download_button(
             "⬇️ Télécharger (CSV complet)",
             data=dfc.to_csv(index=False).encode("utf-8-sig"),
             file_name="contacts_complet.csv",
-            mime="text/csv"
+            mime="text/csv",
+            key="download_complete"
         )
 
         st.caption("Astuce : les emails sont masqués par défaut. Coche l’option pour les voir en clair.")
@@ -471,156 +470,6 @@ if 'username' in st.session_state:
     st.title(f"⚽ Outil de Visualisation de Données Footballistiques - Bienvenue, {st.session_state['username']} !")
 else:
     st.title("Outil de Visualisation de Données Footballistiques")
-
-# --- UPLOAD CSV ---
-st.sidebar.header("📁 Données")
-uploaded_file = st.sidebar.file_uploader("Importer un fichier CSV", type=["csv"])
-if not uploaded_file:
-    st.warning("Veuillez importer un fichier CSV.")
-    st.stop()
-
-# ... (le reste du code de visualisation reste **inchangé** — tu peux le conserver tel quel)
-# (Je ne le réécris pas ici pour ne pas alourdir, mais il suit exactement comme dans ton code initial)
-
-# ⚠️ ⚠️ ⚠️ 
-# → Colle ici **tout le reste de ton code original** à partir de "# --- LECTURE DU CSV ---"
-# jusqu'à la fin.
-# ⚠️ ⚠️ ⚠️
-# =========================================================
-# =================== PORTAIL D’ACCÈS =====================
-# =========================================================
-def require_user_gate():
-    st.markdown("## 🔐 Accès")
-
-    # Si OTP actif et un code est en cours → afficher le formulaire OTP
-    if AUTH_MODE == "otp" and render_otp_form():
-        return
-
-    with st.container():
-        with st.form("gate_form", clear_on_submit=False):
-            col1, col2 = st.columns(2)
-            with col1:
-                nom = st.text_input("Nom *")
-            with col2:
-                prenom = st.text_input("Prénom *")
-            email = st.text_input("Email *", placeholder="ex: nom@domaine.com")
-
-            if AUTH_MODE == "otp":
-                consent = st.checkbox(
-                    "J’accepte que mes informations (nom, prénom, email) soient utilisées pour personnaliser l’application.",
-                    value=True
-                )
-
-            button_label = "Recevoir un code et continuer" if AUTH_MODE == "otp" else "Continuer"
-            submitted = st.form_submit_button(button_label)
-
-            if submitted:
-                if not nom or not prenom or not email:
-                    st.error("Merci de remplir tous les champs obligatoires (*)"); st.stop()
-
-                email_norm = email.strip().lower()
-                if not re.match(EMAIL_REGEX, email_norm):
-                    st.error("Adresse email invalide."); st.stop()
-
-                domain = email_norm.split("@", 1)[1]
-                if domain in DISPOSABLE_DOMAINS:
-                    st.error("Les emails jetables ne sont pas autorisés."); st.stop()
-
-                if not has_mx_record(email_norm):
-                    st.error("Le domaine de l'email ne semble pas exister (MX introuvable)."); st.stop()
-
-                if AUTH_MODE == "otp":
-                    if not consent:
-                        st.warning("Vous devez accepter pour continuer."); st.stop()
-                    start_otp_flow(nom, prenom, email_norm)
-                    st.stop()
-                else:
-                    ok, msg, email_hash = save_contact(nom, prenom, email_norm)
-                    if ok:
-                        st.session_state["gate_passed"] = True
-                        st.session_state["user_email_hash"] = email_hash
-                        st.session_state["username"] = f"{prenom.strip().title()} {nom.strip().upper()}"
-                        st.success(msg)
-                        try:
-                            st.rerun()
-                        except AttributeError:
-                            st.experimental_rerun()
-                        st.stop()
-
-# 🔒 Bloquer l'accès tant que non identifié
-if not st.session_state.get("gate_passed"):
-    require_user_gate()
-    st.stop()
-
-# --- ADMIN : Consulter / Exporter les contacts (protégé) ---
-with st.sidebar.expander("🔑 Contacts (admin)", expanded=False):
-    # Saisie de la clé admin (à définir dans st.secrets)
-    admin_key = st.text_input("Admin key", type="password")
-    expected = st.secrets.get("ADMIN_KEY", None)  # Ex.: ADMIN_KEY="ta-cle-ultra-secrete" dans .streamlit/secrets.toml
-
-    if expected and admin_key == expected:
-        try:
-            dfc = load_contacts().copy()
-        except Exception as e:
-            st.error(f"Impossible de charger les contacts : {e}")
-            dfc = pd.DataFrame(columns=["created_at","prenom","nom","email","email_sha256","id"])
-
-        # Tri du plus récent au plus ancien si la colonne existe
-        if "created_at" in dfc.columns:
-            dfc["created_at"] = pd.to_datetime(dfc["created_at"], errors="coerce")
-            dfc = dfc.sort_values("created_at", ascending=False)
-
-        # Masquer les emails par défaut (option pour afficher en clair)
-        st.write(f"👥 {len(dfc)} contact(s) enregistré(s)")
-        show_full = st.checkbox("Afficher les emails complets", value=False)
-        df_view = dfc.copy()
-        if "email" in df_view.columns and not show_full:
-            df_view["email"] = df_view["email"].fillna("").str.replace(
-                r"(^.).+(@.+$)", r"\1***\2", regex=True
-            )
-
-        # Colonnes affichées (ajuste si besoin)
-        cols_to_show = [c for c in ["created_at","prenom","nom","email"] if c in df_view.columns]
-        st.dataframe(df_view[cols_to_show], use_container_width=True)
-
-        # Filtre date (optionnel mais pratique)
-        with st.popover("🗓️ Filtrer par date (optionnel)"):
-            min_d, max_d = None, None
-            if "created_at" in dfc.columns and not dfc["created_at"].isna().all():
-                min_d = pd.to_datetime(dfc["created_at"]).min().date()
-                max_d = pd.to_datetime(dfc["created_at"]).max().date()
-            if min_d and max_d:
-                d1, d2 = st.date_input("Intervalle", (min_d, max_d))
-                if isinstance(d1, pd.Timestamp): d1 = d1.date()
-                if isinstance(d2, pd.Timestamp): d2 = d2.date()
-                if d1 and d2:
-                    mask = (pd.to_datetime(dfc["created_at"]).dt.date >= d1) & (pd.to_datetime(dfc["created_at"]).dt.date <= d2)
-                    dfc_filtered = dfc.loc[mask].copy()
-                else:
-                    dfc_filtered = dfc
-            else:
-                dfc_filtered = dfc
-
-            # Export filtré
-            st.download_button(
-                "📥 Télécharger (CSV, filtré si dates)",
-                data=dfc_filtered.to_csv(index=False).encode("utf-8-sig"),
-                file_name="contacts.csv",
-                mime="text/csv"
-            )
-
-        # Export complet (sans filtre)
-        st.download_button(
-            "⬇️ Télécharger (CSV complet)",
-            data=dfc.to_csv(index=False).encode("utf-8-sig"),
-            file_name="contacts_complet.csv",
-            mime="text/csv"
-        )
-
-        st.caption("Astuce : les emails sont masqués par défaut. Coche l’option pour les voir en clair.")
-
-    elif admin_key:
-        st.error("Clé admin invalide.")
 
 # --- UPLOAD CSV ---
 st.sidebar.header("📁 Données")
