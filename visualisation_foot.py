@@ -31,6 +31,15 @@ except Exception as e:
     st.warning("Cookies non disponibles (streamlit-cookies-manager manquant). Connexion non persistante.")
     _COOKIES_AVAILABLE = False
 
+# --- IMPORT POUR LES COOKIES (connexion persistante) ---
+try:
+    from streamlit_cookies_manager import CookieManager
+    cookies = CookieManager()
+    _COOKIES_AVAILABLE = True
+except Exception as e:
+    st.warning("Cookies non disponibles (streamlit-cookies-manager manquant). Connexion non persistante.")
+    _COOKIES_AVAILABLE = False
+
 # =========================================================
 # =============== CONFIG GÉNÉRALE & PAGE ==================
 # =========================================================
@@ -64,14 +73,15 @@ def has_mx_record(email: str) -> bool:
         if not domain:
             return False
         if not _DNS_AVAILABLE:
-            return True
+            return True  # si dnspython absent, on ne bloque pas
         answers = dns.resolver.resolve(domain, "MX")
         return len(answers) > 0
     except Exception:
         return False
 
+@st.cache_data(ttl=300)  # Cache rafraîchi toutes les 5 minutes
 def load_contacts() -> pd.DataFrame:
-    cols = ["id","nom","prenom","email","email_sha256","created_at"]
+    cols = ["id", "nom", "prenom", "email", "email_sha256", "created_at"]
     if os.path.exists(CONTACTS_PATH):
         try:
             dfc = pd.read_csv(CONTACTS_PATH, dtype=str)
@@ -85,7 +95,7 @@ def load_contacts() -> pd.DataFrame:
         return pd.DataFrame(columns=cols)
 
 def save_contact(nom: str, prenom: str, email: str):
-    dfc = load_contacts()
+    dfc = load_contacts()  # Utilise le cache, mais on force un clear après écriture
     email_norm = email.strip().lower()
     email_hash = hashlib.sha256(email_norm.encode()).hexdigest()
     if "email" in dfc.columns and not dfc[dfc["email"].str.lower() == email_norm].empty:
@@ -100,8 +110,9 @@ def save_contact(nom: str, prenom: str, email: str):
     }
     dfc = pd.concat([dfc, pd.DataFrame([new_row])], ignore_index=True)
     dfc.to_csv(CONTACTS_PATH, index=False)
+    # 🔁 Invalider le cache après écriture
+    load_contacts.clear()
     return True, "Coordonnées enregistrées ✅", email_hash
-
 # =========================================================
 # ================== MODE OTP (inchangé) ==================
 # ... (le code OTP reste identique — on le garde tel quel)
