@@ -242,6 +242,167 @@ with st.sidebar.expander("🔑 Zone admin", expanded=False):
     elif admin_key:
         st.error("Clé admin invalide.")
 """
+# === UTILS EMAIL / OTP BACKENDS ===
+import socket, ssl, smtplib, json
+try:
+    import requests
+except Exception:
+    requests = None  # si requests absent, on gère le message
+
+def _resolve_host_or_msg(host: str) -> tuple[bool, str]:
+    try:
+        socket.getaddrinfo(host, None)
+        return True, ""
+    except Exception as e:
+        return False, f"Impossible de résoudre le nom d’hôte SMTP '{host}'. Erreur: {e}. " \
+                      f"Vérifie st.secrets['SMTP_HOST'] (ex: 'smtp.gmail.com', 'smtp.sendgrid.net')."
+
+def send_otp_email(to_email: str, otp: str) -> tuple[bool, str]:
+    """
+    Envoie l'OTP via l'un des backends configurés :
+      st.secrets['EMAIL_BACKEND'] in {'smtp','sendgrid','mailgun'}  (défaut: 'smtp')
+
+    SMTP secrets attendus :
+      SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_SECURITY ('SSL'|'STARTTLS'|'PLAINTEXT'; défaut 'SSL')
+      APP_NAME (facultatif)
+
+    SendGrid (API) secrets :
+      SENDGRID_API_KEY, SMTP_FROM (utilisé comme from), APP_NAME (facultatif)
+
+    Mailgun (API) secrets :
+      MAILGUN_DOMAIN, MAILGUN_API_KEY, SMTP_FROM, APP_NAME (facultatif)
+
+    DEBUG_OTP (bool, défaut False) : si True, affiche l’OTP en UI si l’envoi échoue.
+    """
+    backend = (st.secrets.get("EMAIL_BACKEND") or "smtp").lower()
+    app_name = st.secrets.get("APP_NAME", "Votre application")
+
+    subject = f"[{app_name}] Votre code de vérification"
+    body = (
+        f"Bonjour,\n\n"
+        f"Voici votre code de vérification : {otp}\n"
+        f"Il expire dans {OTP_TTL_MINUTES} minutes.\n\n"
+        f"--\n{app_name}"
+    )
+
+    # --- SMTP backend ---
+    if backend == "smtp":
+        host = st.secrets.get("SMTP_HOST")
+        port = int(st.secrets.get("SMTP_PORT", 465))
+        user = st.secrets.get("SMTP_USER")
+        pwd  = st.secrets.get("SMTP_PASS")
+        from_addr = st.secrets.get("SMTP_FROM", user)
+        security = (st.secrets.get("SMTP_SECURITY") or "SSL").upper()
+
+        missing = [k for k,v in {
+            "SMTP_HOST":host, "SMTP_PORT":port, "SMTP_USER":user, "SMTP_PASS":pwd
+        }.items() if not v]
+        if missing:
+            return False, f"Configuration SMTP incomplète (manque: {', '.join(missing)})."
+
+        ok_resolve, msg_resolve = _resolve_host_or_msg(host)
+        if not ok_resolve:
+            return False, msg_resolve
+
+        msg = f"From: {from_addr}\r\nTo: {to_email}\r\nSubject: {subject}\r\n\r\n{body}".encode("utf-8")
+
+        try:
+            if security == "SSL":
+                context = ssl.create_default_context()
+                with smtplib.SMTP_SSL(host, port, context=context, timeout=20) as server:
+                    server.login(user, pwd)
+                    server.sendmail(from_addr, [to_email], msg)
+            elif security == "STARTTLS":
+                with smtplib.SMTP(host, port, timeout=20) as server:
+                    server.ehlo()
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                    server.login(user, pwd)
+                    server.sendmail(from_addr, [to_email], msg)
+            else:  # PLAINTEXT (éviter en prod)
+                with smtplib.SMTP(host, port, timeout=20) as server:
+                    server.login(user, pwd)
+                    server.sendmail(from_addr, [to_email], msg)
+            return True, "Un code vous a été envoyé par email."
+        except Exception as e:
+            # Fallback DEV : afficher le code si demandé
+            if st.secrets.get("DEBUG_OTP", False):
+                st.warning(f"[DEV] Envoi email impossible ({e}). Code OTP affiché ci-dessous (ne pas activer en production).")
+                st.code(otp)
+                return True, "Mode DEV : OTP affiché dans l’interface."
+            return False, f"Échec d'envoi du code : {e}"
+
+    # --- SendGrid backend (API) ---
+    elif backend == "sendgrid":
+        if requests is None:
+            return False, "Le backend SendGrid nécessite 'requests'. Ajoute-le à requirements.txt."
+        api_key = st.secrets.get("SENDGRID_API_KEY")
+        from_addr = st.secrets.get("SMTP_FROM")
+        if not api_key or not from_addr:
+            return False, "Config SendGrid incomplète (SENDGRID_API_KEY et SMTP_FROM requis)."
+
+        url = "https://api.sendgrid.com/v3/mail/send"
+        payload = {
+            "personalizations": [{"to":[{"email": to_email}], "subject": subject}],
+            "from": {"email": from_addr},
+            "content": [{"type": "text/plain", "value": body}]
+        }
+        try:
+            r = requests.post(url, headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }, data=json.dumps(payload), timeout=20)
+            if 200 <= r.status_code < 300:
+                return True, "Un code vous a été envoyé par email."
+            else:
+                if st.secrets.get("DEBUG_OTP", False):
+                    st.warning(f"[DEV] SendGrid a répondu {r.status_code}: {r.text}. OTP affiché ci-dessous.")
+                    st.code(otp)
+                    return True, "Mode DEV : OTP affiché dans l’interface."
+                return False, f"SendGrid erreur {r.status_code}: {r.text}"
+        except Exception as e:
+            if st.secrets.get("DEBUG_OTP", False):
+                st.warning(f"[DEV] Envoi via SendGrid impossible ({e}). OTP affiché ci-dessous.")
+                st.code(otp)
+                return True, "Mode DEV : OTP affiché dans l’interface."
+            return False, f"Échec d'envoi via SendGrid : {e}"
+
+    # --- Mailgun backend (API) ---
+    elif backend == "mailgun":
+        if requests is None:
+            return False, "Le backend Mailgun nécessite 'requests'. Ajoute-le à requirements.txt."
+        domain = st.secrets.get("MAILGUN_DOMAIN")
+        api_key = st.secrets.get("MAILGUN_API_KEY")
+        from_addr = st.secrets.get("SMTP_FROM")
+        if not domain or not api_key or not from_addr:
+            return False, "Config Mailgun incomplète (MAILGUN_DOMAIN, MAILGUN_API_KEY, SMTP_FROM)."
+
+        url = f"https://api.mailgun.net/v3/{domain}/messages"
+        data = {
+            "from": from_addr,
+            "to": [to_email],
+            "subject": subject,
+            "text": body
+        }
+        try:
+            r = requests.post(url, auth=("api", api_key), data=data, timeout=20)
+            if 200 <= r.status_code < 300:
+                return True, "Un code vous a été envoyé par email."
+            else:
+                if st.secrets.get("DEBUG_OTP", False):
+                    st.warning(f"[DEV] Mailgun a répondu {r.status_code}: {r.text}. OTP affiché ci-dessous.")
+                    st.code(otp)
+                    return True, "Mode DEV : OTP affiché dans l’interface."
+                return False, f"Mailgun erreur {r.status_code}: {r.text}"
+        except Exception as e:
+            if st.secrets.get("DEBUG_OTP", False):
+                st.warning(f"[DEV] Envoi via Mailgun impossible ({e}). OTP affiché ci-dessous.")
+                st.code(otp)
+                return True, "Mode DEV : OTP affiché dans l’interface."
+            return False, f"Échec d'envoi via Mailgun : {e}"
+
+    else:
+        return False, f"EMAIL_BACKEND inconnu: {backend}. Utilise 'smtp', 'sendgrid' ou 'mailgun'."
 
 # --- PAGE PRINCIPALE ---
 if 'username' in st.session_state:
