@@ -30,15 +30,6 @@ except Exception:
     _COOKIES_AVAILABLE = False
     # Pas d'avertissement visible — connexion non persistante en silence
 
-# --- IMPORT POUR LES COOKIES (connexion persistante) ---
-try:
-    from streamlit_cookies_manager import CookieManager
-    cookies = CookieManager()
-    _COOKIES_AVAILABLE = True
-except Exception as e:
-    st.warning("Cookies non disponibles (streamlit-cookies-manager manquant). Connexion non persistante.")
-    _COOKIES_AVAILABLE = False
-
 # =========================================================
 # =============== CONFIG GÉNÉRALE & PAGE ==================
 # =========================================================
